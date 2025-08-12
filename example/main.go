@@ -4,9 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
-	simplestdioplugin "simple-stdio-plugin"
 	"sync"
 	"time"
+
+	simplestdioplugin "github.com/concernedmate/simple-stdio-plugin"
 )
 
 func main() {

@@ -3,7 +3,8 @@ package main
 import (
 	"log"
 	"os"
-	simplestdioplugin "simple-stdio-plugin"
+
+	simplestdioplugin "github.com/concernedmate/simple-stdio-plugin"
 )
 
 func main() {
