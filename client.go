@@ -2,12 +2,13 @@ package simplestdioplugin
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"os"
 	"strings"
 )
 
 type PluginData struct {
-	Router map[string]func(json string) ([]byte, error)
+	Router map[string]func(json []byte) ([]byte, error)
 
 	Stdin  *os.File
 	Stdout *os.File
@@ -41,17 +42,23 @@ func (plugin *PluginData) writeOutput(data []byte) error {
 	return nil
 }
 
-func parseClientMessage(msg string) (sub string, json string) {
+func parseClientMessage(msg string) (sub string, jsondata []byte) {
 	if strings.Contains(msg, "?json=") {
 		split := strings.Split(msg, "?json=")
 
-		return split[0], strings.Join(split[1:], "?json=")
+		sub = split[0]
+		jsondata = []byte(strings.Join(split[1:], "?json="))
+		if json.Valid(jsondata) {
+			return sub, jsondata
+		}
+
+		return sub, nil
 	}
 
-	return msg, ""
+	return msg, nil
 }
 
-func NewPlugin(Router map[string]func(json string) ([]byte, error), Stdin *os.File, Stdout *os.File) PluginData {
+func NewPlugin(Router map[string]func(json []byte) ([]byte, error), Stdin *os.File, Stdout *os.File) PluginData {
 	return PluginData{Router: Router, Stdin: Stdin, Stdout: Stdout}
 }
 
