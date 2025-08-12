@@ -7,7 +7,7 @@ import (
 )
 
 type PluginData struct {
-	Router map[string]func(queries map[string]string) ([]byte, error)
+	Router map[string]func(json string) ([]byte, error)
 
 	Stdin  *os.File
 	Stdout *os.File
@@ -41,23 +41,17 @@ func (plugin *PluginData) writeOutput(data []byte) error {
 	return nil
 }
 
-func parseClientMessage(msg string) (string, map[string]string) {
-	if strings.Contains(msg, "?") {
-		split := strings.Split(msg, "?")
-		sub := split[0]
-		queries := strings.Split(split[1], "&")
-		mapped := map[string]string{}
-		for _, val := range queries {
-			query_split := strings.Split(val, "=")
-			mapped[query_split[0]] = query_split[1]
-		}
-		return sub, mapped
+func parseClientMessage(msg string) (sub string, json string) {
+	if strings.Contains(msg, "?json=") {
+		split := strings.Split(msg, "?json=")
+
+		return split[0], strings.Join(split[1:], "?json=")
 	}
 
-	return msg, nil
+	return msg, ""
 }
 
-func NewPlugin(Router map[string]func(queries map[string]string) ([]byte, error), Stdin *os.File, Stdout *os.File) PluginData {
+func NewPlugin(Router map[string]func(json string) ([]byte, error), Stdin *os.File, Stdout *os.File) PluginData {
 	return PluginData{Router: Router, Stdin: Stdin, Stdout: Stdout}
 }
 
@@ -68,11 +62,11 @@ func PluginServe(plugin PluginData) error {
 			return err
 		}
 
-		sub, queries := parseClientMessage(string(data))
+		sub, json := parseClientMessage(string(data))
 
 		function := plugin.Router[sub]
 		if function != nil {
-			result, err := function(queries)
+			result, err := function(json)
 			if err != nil {
 				_ = plugin.writeOutput([]byte("plugin error: " + err.Error()))
 			} else {
