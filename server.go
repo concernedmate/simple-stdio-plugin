@@ -33,6 +33,19 @@ func (mapped *PluginMap) GetPluginList() ([]*PluginRunning, error) {
 	return result, nil
 }
 
+func (mapped *PluginMap) GetPluginByName(plugin_name string) (*PluginRunning, error) {
+	val, ok := mapped.Map.Load(plugin_name)
+	if !ok {
+		return nil, errors.New("plugin not found")
+	}
+	result, ok := val.(*PluginRunning)
+	if !ok {
+		return nil, errors.New("plugin not found")
+	}
+
+	return result, nil
+}
+
 type PluginRunning struct {
 	Name string
 	Path string
@@ -56,6 +69,9 @@ func (plugin *PluginRunning) Command(command []byte) ([]byte, error) {
 	output_channel := make(chan []byte)
 	error_channel := make(chan []byte)
 	go func(plugin *PluginRunning, output_chan, error_chan chan []byte) {
+		defer close(output_chan)
+		defer close(error_chan)
+
 		if plugin == nil {
 			log.Fatal("PluginRunning is NULL")
 		}
@@ -131,10 +147,10 @@ func execPlugin(ctx context.Context, location string, syncMap *sync.Map) error {
 	}
 
 	plugin_running := &PluginRunning{
-		Name: name, Path: location,
-		Cmd: cmd, PipeIn: pipein, PipeOut: pipeout, PipeErr: pipeerr,
+		Name: name, Path: location, Cmd: cmd,
+		PipeIn: pipein, PipeOut: pipeout, PipeErr: pipeerr,
 	}
-	syncMap.Store(location, plugin_running)
+	syncMap.Store(name, plugin_running)
 
 	if err := cmd.Start(); err != nil {
 		return err
