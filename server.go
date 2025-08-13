@@ -180,7 +180,7 @@ func EncodeCommand(data []byte) ([]byte, error) {
 	result[0] = 2                                             // version
 	binary.BigEndian.PutUint32(result[1:], uint32(len(data))) // data length
 
-	result = slices.Replace(result, 3, 3+len(data), data...)
+	result = slices.Replace(result, 1+4, 1+4+len(data), data...)
 
 	result[len(result)-1] = 0xAD
 
