@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"os/exec"
 	"path"
@@ -169,15 +170,15 @@ func execPlugin(ctx context.Context, location string, syncMap *sync.Map) error {
 // 02 0000 ... 0xAD
 // version-length-data-ending
 func EncodeCommand(data []byte) ([]byte, error) {
-	total := 1 + 8 + len(data) + 1
-	if total > 65530 {
-		return nil, fmt.Errorf("command too long: %d bytes (max 65530)", total)
+	var total int = 1 + 4 + len(data) + 1
+	if total > math.MaxInt32 {
+		return nil, fmt.Errorf("command too long: %d bytes (max 2147483647)", total)
 	}
 
 	result := make([]byte, total)
 
 	result[0] = 2                                             // version
-	binary.BigEndian.PutUint64(result[1:], uint64(len(data))) // data length
+	binary.BigEndian.PutUint32(result[1:], uint32(len(data))) // data length
 
 	result = slices.Replace(result, 3, 3+len(data), data...)
 
