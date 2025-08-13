@@ -3,7 +3,6 @@ package simplestdioplugin
 import (
 	"context"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -181,13 +180,9 @@ func EncodeCommand(data []byte) ([]byte, error) {
 	result[0] = 2                                             // version
 	binary.BigEndian.PutUint32(result[1:], uint32(len(data))) // data length
 
-	fmt.Println(hex.EncodeToString(result))
-
 	result = slices.Replace(result, 5, 5+len(data), data...)
 
 	result[len(result)-1] = 0xAD
-
-	fmt.Println(hex.EncodeToString(result))
 
 	return result, nil
 }
