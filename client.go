@@ -15,13 +15,13 @@ type PluginData struct {
 }
 
 func (plugin *PluginData) readInput() ([]byte, error) {
-	header := make([]byte, 3)
+	header := make([]byte, 5)
 	if _, err := plugin.Stdin.Read(header); err != nil {
 		return nil, err
 	}
 
 	// version := header[0]
-	length := int(binary.BigEndian.Uint16(header[1:]))
+	length := int(binary.BigEndian.Uint32(header[1:]))
 
 	data := make([]byte, length+1) // plus ending
 	if _, err := plugin.Stdin.Read(data); err != nil {
@@ -70,7 +70,6 @@ func PluginServe(plugin PluginData) error {
 		}
 
 		sub, json := parseClientMessage(string(data))
-
 		function := plugin.Router[sub]
 		if function != nil {
 			result, err := function(json)
