@@ -3,6 +3,7 @@ package simplestdioplugin
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -83,13 +84,13 @@ func (plugin *PluginRunning) Command(command []byte) ([]byte, error) {
 			return
 		}
 
-		header := make([]byte, 3)
+		header := make([]byte, 5)
 		if _, err := plugin.PipeOut.Read(header); err != nil {
 			error_chan <- []byte(fmt.Sprintf("error command: %s", err.Error()))
 			return
 		}
 
-		length := binary.BigEndian.Uint16(header[1:])
+		length := binary.BigEndian.Uint32(header[1:])
 
 		result := make([]byte, length+1)
 		if _, err := plugin.PipeOut.Read(result); err != nil {
@@ -180,9 +181,13 @@ func EncodeCommand(data []byte) ([]byte, error) {
 	result[0] = 2                                             // version
 	binary.BigEndian.PutUint32(result[1:], uint32(len(data))) // data length
 
-	result = slices.Replace(result, 1+4, 1+4+len(data), data...)
+	fmt.Println(hex.EncodeToString(result))
+
+	result = slices.Replace(result, 5, 5+len(data), data...)
 
 	result[len(result)-1] = 0xAD
+
+	fmt.Println(hex.EncodeToString(result))
 
 	return result, nil
 }
