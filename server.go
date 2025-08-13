@@ -166,18 +166,18 @@ func execPlugin(ctx context.Context, location string, syncMap *sync.Map) error {
 	return nil
 }
 
-// 01 0000 ... AD
-// version length data ending
+// 02 0000 ... 0xAD
+// version-length-data-ending
 func EncodeCommand(data []byte) ([]byte, error) {
-	total := 4 + len(data)
+	total := 1 + 8 + len(data) + 1
 	if total > 65530 {
 		return nil, fmt.Errorf("command too long: %d bytes (max 65530)", total)
 	}
 
 	result := make([]byte, total)
 
-	result[0] = 1                                             // version
-	binary.BigEndian.PutUint16(result[1:], uint16(len(data))) // data length
+	result[0] = 2                                             // version
+	binary.BigEndian.PutUint64(result[1:], uint64(len(data))) // data length
 
 	result = slices.Replace(result, 3, 3+len(data), data...)
 
