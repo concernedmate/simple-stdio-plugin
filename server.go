@@ -171,7 +171,7 @@ func execPlugin(ctx context.Context, location string, syncMap *sync.Map) error {
 func EncodeCommand(data []byte) ([]byte, error) {
 	total := 4 + len(data)
 	if total > 65530 {
-		return nil, errors.New("command too long")
+		return nil, fmt.Errorf("command too long: %d bytes (max 65530)", total)
 	}
 
 	result := make([]byte, total)
