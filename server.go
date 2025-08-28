@@ -51,6 +51,8 @@ type PluginRunning struct {
 	Name string
 	Path string
 
+	cmdMutex sync.Mutex
+
 	Cmd     *exec.Cmd
 	PipeIn  io.WriteCloser
 	PipeOut io.ReadCloser
@@ -61,6 +63,10 @@ func (plugin *PluginRunning) Command(command []byte) ([]byte, error) {
 	if plugin.Cmd.ProcessState != nil {
 		return nil, errors.New("process is already exited")
 	}
+
+	// process function one by one
+	plugin.cmdMutex.Lock()
+	defer plugin.cmdMutex.Unlock()
 
 	encoded, err := EncodeCommand(command)
 	if err != nil {
