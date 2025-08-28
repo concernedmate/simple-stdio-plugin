@@ -137,10 +137,10 @@ func findPluginPath(base_location string, extension string) ([]string, error) {
 	return result, nil
 }
 
-func execPlugin(ctx context.Context, location string, syncMap *sync.Map) error {
+func execPlugin(ctx context.Context, syncMap *sync.Map, location string, args ...string) error {
 	name := path.Base(location)
 
-	cmd := exec.CommandContext(ctx, location)
+	cmd := exec.CommandContext(ctx, location, args...)
 
 	pipein, err := cmd.StdinPipe()
 	if err != nil {
@@ -195,14 +195,14 @@ func EncodeCommand(data []byte) ([]byte, error) {
 	return result, nil
 }
 
-func PluginRunner(ctx context.Context, sync *PluginMap, base_location, extension string) error {
+func PluginRunner(ctx context.Context, sync *PluginMap, base_location, extension string, args ...string) error {
 	locations, err := findPluginPath(base_location, extension)
 	if err != nil {
 		return err
 	}
 
 	for _, val := range locations {
-		if err := execPlugin(ctx, val, sync.Map); err != nil {
+		if err := execPlugin(ctx, sync.Map, val, args...); err != nil {
 			return err
 		}
 	}
@@ -216,7 +216,7 @@ func PluginRunner(ctx context.Context, sync *PluginMap, base_location, extension
 				p, ok := value.(*PluginRunning)
 				if ok {
 					if p.Cmd.ProcessState != nil {
-						_ = execPlugin(ctx, p.Path, sync.Map)
+						_ = execPlugin(ctx, sync.Map, p.Path, args...)
 					}
 				}
 
