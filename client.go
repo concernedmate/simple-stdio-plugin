@@ -33,11 +33,23 @@ func (plugin *PluginData) readInput() ([]byte, error) {
 }
 
 func (plugin *PluginData) writeOutput(data []byte) error {
-	total, err := EncodeCommand(data)
-	if err != nil {
-		return err
+	sent := 0
+	for {
+		if sent > len(data) {
+			break
+		}
+		chunk := data[sent:(sent + 4096)]
+		sent += 4096
+
+		total, err := EncodeCommand(chunk)
+		if err != nil {
+			return err
+		}
+		_, err = plugin.Stdout.Write(total)
+		if err != nil {
+			return err
+		}
 	}
-	plugin.Stdout.Write(total)
 
 	return nil
 }

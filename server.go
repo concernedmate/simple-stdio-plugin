@@ -83,21 +83,29 @@ func (plugin *PluginRunning) Command(command []byte) ([]byte, error) {
 			return
 		}
 
-		header := make([]byte, 5)
-		if _, err := plugin.PipeOut.Read(header); err != nil {
-			error_chan <- []byte(fmt.Sprintf("error command: %s", err.Error()))
-			return
+		result := []byte{}
+		for {
+			header := make([]byte, 5)
+			if _, err := plugin.PipeOut.Read(header); err != nil {
+				error_chan <- []byte(fmt.Sprintf("error command: %s", err.Error()))
+				return
+			}
+
+			length := binary.BigEndian.Uint32(header[1:])
+
+			response := make([]byte, length+1)
+			if _, err := plugin.PipeOut.Read(response); err != nil {
+				error_chan <- []byte(fmt.Sprintf("error command: %s", err.Error()))
+				return
+			}
+
+			if length == 0 {
+				break
+			}
+
+			result = append(result, response[:len(response)-1]...)
 		}
 
-		length := binary.BigEndian.Uint32(header[1:])
-
-		result := make([]byte, length+1)
-		if _, err := plugin.PipeOut.Read(result); err != nil {
-			error_chan <- []byte(fmt.Sprintf("error command: %s", err.Error()))
-			return
-		}
-
-		result = result[:len(result)-1]
 		output_chan <- result
 	}(plugin, output_channel, error_channel)
 
