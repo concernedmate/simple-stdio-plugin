@@ -7,6 +7,8 @@ import (
 	"strings"
 )
 
+const CHUNK_SIZE = 4096
+
 type PluginData struct {
 	Router map[string]func(json []byte) ([]byte, error)
 
@@ -33,13 +35,19 @@ func (plugin *PluginData) readInput() ([]byte, error) {
 }
 
 func (plugin *PluginData) writeOutput(data []byte) error {
-	sent := 0
+	counter := 0
 	for {
-		if sent > len(data) {
+		if counter >= len(data) {
 			break
 		}
-		chunk := data[sent:(sent + 4096)]
-		sent += 4096
+
+		var chunk []byte
+		if counter+CHUNK_SIZE >= len(data) {
+			chunk = data[counter:]
+		} else {
+			chunk = data[counter:(counter + CHUNK_SIZE)]
+		}
+		counter += CHUNK_SIZE
 
 		total, err := EncodeCommand(chunk)
 		if err != nil {
@@ -49,6 +57,15 @@ func (plugin *PluginData) writeOutput(data []byte) error {
 		if err != nil {
 			return err
 		}
+	}
+
+	eof, err := EncodeCommand([]byte{})
+	if err != nil {
+		return err
+	}
+	_, err = plugin.Stdout.Write(eof)
+	if err != nil {
+		return err
 	}
 
 	return nil

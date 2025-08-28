@@ -31,7 +31,7 @@ func main() {
 			if err != nil {
 				log.Fatal(err)
 			}
-			fmt.Println(string(result), "hehe")
+			fmt.Println("result: ", string(result))
 		}
 
 		time.Sleep(time.Second)

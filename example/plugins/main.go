@@ -8,8 +8,8 @@ import (
 )
 
 func main() {
-	router := map[string]func(json []byte) ([]byte, error){
-		"tes-command": func(json []byte) ([]byte, error) {
+	router := map[string]func(jsons []byte) ([]byte, error){
+		"tes-command": func(jsons []byte) ([]byte, error) {
 			return []byte("testing"), nil
 		},
 	}
