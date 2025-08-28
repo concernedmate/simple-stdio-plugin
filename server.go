@@ -87,6 +87,9 @@ func (plugin *PluginRunning) Command(command []byte) ([]byte, error) {
 		for {
 			header := make([]byte, 5)
 			if _, err := plugin.PipeOut.Read(header); err != nil {
+				if err == io.EOF {
+					break
+				}
 				error_chan <- []byte(fmt.Sprintf("error command: %s", err.Error()))
 				return
 			}
@@ -95,6 +98,9 @@ func (plugin *PluginRunning) Command(command []byte) ([]byte, error) {
 
 			response := make([]byte, length+1)
 			if _, err := plugin.PipeOut.Read(response); err != nil {
+				if err == io.EOF {
+					break
+				}
 				error_chan <- []byte(fmt.Sprintf("error command: %s", err.Error()))
 				return
 			}
