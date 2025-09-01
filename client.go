@@ -3,6 +3,7 @@ package simplestdioplugin
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 )
@@ -16,25 +17,34 @@ type PluginData struct {
 	Stdout *os.File
 }
 
-func (plugin *PluginData) readInput() ([]byte, error) {
+func (plugin *PluginData) readInput() (id []byte, data []byte, err error) {
 	header := make([]byte, 5)
 	if _, err := plugin.Stdin.Read(header); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-
 	// version := header[0]
 	length := int(binary.BigEndian.Uint32(header[1:]))
 
-	data := make([]byte, length+1) // plus ending
-	if _, err := plugin.Stdin.Read(data); err != nil {
-		return nil, err
+	// 37 = uuid + separator + end byte
+	if length < 37 {
+		return nil, nil, errors.New("invalid response")
 	}
+
+	response := make([]byte, length+1) // plus ending
+	_, err = plugin.Stdin.Read(response)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	id = response[0:36]
+	data = response[37:] // +1 separator
+
 	data = data[:len(data)-1]
 
-	return data, nil
+	return id, data, nil
 }
 
-func (plugin *PluginData) writeOutput(data []byte) error {
+func (plugin *PluginData) writeOutput(id []byte, data []byte) error {
 	counter := 0
 	for {
 		if counter >= len(data) {
@@ -49,7 +59,7 @@ func (plugin *PluginData) writeOutput(data []byte) error {
 		}
 		counter += CHUNK_SIZE
 
-		total, err := EncodeCommand(chunk)
+		total, err := EncodeCommand(id, chunk)
 		if err != nil {
 			return err
 		}
@@ -59,7 +69,7 @@ func (plugin *PluginData) writeOutput(data []byte) error {
 		}
 	}
 
-	eof, err := EncodeCommand([]byte{})
+	eof, err := EncodeCommand(id, []byte{})
 	if err != nil {
 		return err
 	}
@@ -87,30 +97,33 @@ func parseClientMessage(msg string) (sub string, jsondata []byte) {
 	return msg, nil
 }
 
-func NewPlugin(Router map[string]func(json []byte) ([]byte, error), Stdin *os.File, Stdout *os.File) PluginData {
+func NewPluginClient(Router map[string]func(json []byte) ([]byte, error), Stdin *os.File, Stdout *os.File) PluginData {
 	return PluginData{Router: Router, Stdin: Stdin, Stdout: Stdout}
 }
 
 func PluginServe(plugin PluginData) error {
 	for {
-		data, err := plugin.readInput()
+		id, data, err := plugin.readInput()
 		if err != nil {
 			return err
 		}
 
 		sub, json := parseClientMessage(string(data))
-		function := plugin.Router[sub]
-		if function != nil {
-			result, err := function(json)
-			if err != nil {
-				_ = plugin.writeOutput([]byte("plugin error: " + err.Error()))
-			} else {
-				if err := plugin.writeOutput(result); err != nil {
-					plugin.writeOutput([]byte("plugin error: " + err.Error()))
+
+		go func() {
+			function := plugin.Router[sub]
+			if function != nil {
+				result, err := function(json)
+				if err != nil {
+					_ = plugin.writeOutput(id, []byte("plugin error: "+err.Error()))
+				} else {
+					if err := plugin.writeOutput(id, result); err != nil {
+						plugin.writeOutput(id, []byte("plugin error: "+err.Error()))
+					}
 				}
+			} else {
+				plugin.writeOutput(id, []byte("plugin error: "+sub))
 			}
-		} else {
-			plugin.writeOutput([]byte("plugin error: not found"))
-		}
+		}()
 	}
 }
