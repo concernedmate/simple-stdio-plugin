@@ -125,9 +125,11 @@ func (plugin *PluginRunning) runner() error {
 		case <-plugin.ctx.Done():
 			return nil
 		case comm := <-plugin.write_chan:
+			plugin.cmd_mutex.RLock()
 			if plugin.cmd_map[string(comm.id)].err == nil {
 				return errors.New("channel err not exist")
 			}
+			plugin.cmd_mutex.RUnlock()
 
 			encoded, err := EncodeCommand(comm.id, comm.data)
 			if err != nil {
@@ -145,9 +147,11 @@ func (plugin *PluginRunning) runner() error {
 				plugin.cmd_mutex.Unlock()
 			}
 		case comm := <-plugin.resp_chan:
+			plugin.cmd_mutex.RLock()
 			if plugin.cmd_map[string(comm.id)].out == nil {
 				return errors.New("channel out not exist")
 			}
+			plugin.cmd_mutex.RUnlock()
 
 			plugin.cmd_mutex.Lock()
 			plugin.cmd_map[string(comm.id)].out <- comm.data
