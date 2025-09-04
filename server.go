@@ -57,7 +57,7 @@ type PluginRunning struct {
 	write_chan chan PluginComm
 	resp_chan  chan PluginComm
 
-	cmd_mutex sync.Mutex
+	cmd_mutex sync.RWMutex
 	cmd_map   map[string]CommandComm
 
 	cmd      *exec.Cmd
@@ -96,14 +96,23 @@ func (plugin *PluginRunning) Command(command []byte) ([]byte, error) {
 	id := uuid.New().String()
 
 	plugin.CreateChannel(id)
-	defer plugin.cmd_map[id].Close()
+	defer func() {
+		plugin.cmd_mutex.Lock()
+		defer plugin.cmd_mutex.Unlock()
+
+		plugin.cmd_map[id].Close()
+	}()
+
+	plugin.cmd_mutex.RLock()
+	channels := plugin.cmd_map[id]
+	plugin.cmd_mutex.RUnlock()
 
 	plugin.write_chan <- PluginComm{id: []byte(id), data: command}
 
 	select {
-	case err := <-plugin.cmd_map[id].err:
+	case err := <-channels.err:
 		return nil, errors.New(string(err))
-	case result := <-plugin.cmd_map[id].out:
+	case result := <-channels.out:
 		return result, nil
 	}
 }
@@ -122,14 +131,18 @@ func (plugin *PluginRunning) runner() error {
 
 			encoded, err := EncodeCommand(comm.id, comm.data)
 			if err != nil {
+				plugin.cmd_mutex.Lock()
 				plugin.cmd_map[string(comm.id)].err <- []byte(err.Error())
 				plugin.cmd_map[string(comm.id)].Close()
+				plugin.cmd_mutex.Unlock()
 			}
 
 			_, err = plugin.pipe_in.Write(encoded)
 			if err != nil {
+				plugin.cmd_mutex.Lock()
 				plugin.cmd_map[string(comm.id)].err <- []byte(err.Error())
 				plugin.cmd_map[string(comm.id)].Close()
+				plugin.cmd_mutex.Unlock()
 			}
 		case comm := <-plugin.resp_chan:
 			if plugin.cmd_map[string(comm.id)].out == nil {
@@ -232,7 +245,7 @@ func execPlugin(syncMap *sync.Map, location string, args ...string) error {
 
 	plugin_running := &PluginRunning{
 		Name: name, Path: location, cmd: cmd,
-		ctx: ctx, cancel: cancel, cmd_mutex: sync.Mutex{}, cmd_map: make(map[string]CommandComm),
+		ctx: ctx, cancel: cancel, cmd_mutex: sync.RWMutex{}, cmd_map: make(map[string]CommandComm),
 		write_chan: make(chan PluginComm), resp_chan: make(chan PluginComm),
 		pipe_in: pipein, pipe_out: pipeout, pipe_err: pipeerr,
 	}
