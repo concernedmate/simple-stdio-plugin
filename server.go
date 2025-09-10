@@ -76,12 +76,12 @@ type CommandComm struct {
 	err chan []byte
 }
 
-func (comm CommandComm) Close() {
+func (comm CommandComm) close() {
 	close(comm.out)
 	close(comm.err)
 }
 
-func (plugin *PluginRunning) CreateChannel(id string) {
+func (plugin *PluginRunning) createChannel(id string) {
 	plugin.cmd_mutex.Lock()
 	defer plugin.cmd_mutex.Unlock()
 
@@ -95,12 +95,12 @@ func (plugin *PluginRunning) Command(command []byte) ([]byte, error) {
 
 	id := uuid.New().String()
 
-	plugin.CreateChannel(id)
+	plugin.createChannel(id)
 	defer func() {
 		plugin.cmd_mutex.Lock()
 		defer plugin.cmd_mutex.Unlock()
 
-		plugin.cmd_map[id].Close()
+		plugin.cmd_map[id].close()
 	}()
 
 	plugin.cmd_mutex.RLock()
@@ -135,7 +135,7 @@ func (plugin *PluginRunning) runner() error {
 			if err != nil {
 				plugin.cmd_mutex.Lock()
 				plugin.cmd_map[string(comm.id)].err <- []byte(err.Error())
-				plugin.cmd_map[string(comm.id)].Close()
+				plugin.cmd_map[string(comm.id)].close()
 				plugin.cmd_mutex.Unlock()
 			}
 
@@ -143,7 +143,7 @@ func (plugin *PluginRunning) runner() error {
 			if err != nil {
 				plugin.cmd_mutex.Lock()
 				plugin.cmd_map[string(comm.id)].err <- []byte(err.Error())
-				plugin.cmd_map[string(comm.id)].Close()
+				plugin.cmd_map[string(comm.id)].close()
 				plugin.cmd_mutex.Unlock()
 			}
 		case comm := <-plugin.resp_chan:
@@ -198,6 +198,9 @@ func (plugin *PluginRunning) reader() error {
 				result_mutex.Lock()
 				final := PluginComm{id: id, data: result[string(id)]}
 				result_mutex.Unlock()
+
+				// reset after
+				result[string(id)] = nil
 
 				plugin.resp_chan <- final
 			} else {
