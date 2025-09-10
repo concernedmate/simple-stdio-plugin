@@ -121,7 +121,12 @@ func NewPluginClient(Router map[string]func(json []byte) ([]byte, error), Stdin 
 	return PluginData{Router: Router, Stdin: Stdin, Stdout: Stdout}
 }
 
-func PluginServe(plugin PluginData, max_concurrent int) error {
+func PluginServe(plugin PluginData, max_conn ...int) error {
+	max_concurrent := 1000
+	if len(max_conn) > 0 {
+		max_concurrent = max_conn[0]
+	}
+
 	mut := sync.RWMutex{}
 	concurrent := 0
 
