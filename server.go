@@ -187,8 +187,13 @@ func (plugin *PluginRunning) reader() error {
 			}
 
 			response := make([]byte, length+1)
-			if _, err := plugin.pipe_out.Read(response); err != nil {
+			n, err := plugin.pipe_out.Read(response)
+			if err != nil {
 				return err
+			}
+
+			if n != int(length)+1 {
+				return errors.New("invalid packet length")
 			}
 
 			id := response[0:36]
@@ -197,10 +202,9 @@ func (plugin *PluginRunning) reader() error {
 			if len(resp) == 1 {
 				result_mutex.Lock()
 				final := PluginComm{id: id, data: result[string(id)]}
-				result_mutex.Unlock()
-
 				// reset after
-				result[string(id)] = nil
+				delete(result, string(id))
+				result_mutex.Unlock()
 
 				plugin.resp_chan <- final
 			} else {
