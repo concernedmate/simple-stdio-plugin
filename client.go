@@ -4,8 +4,10 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"strings"
+	"sync"
 )
 
 const CHUNK_SIZE = 4096
@@ -18,12 +20,13 @@ type PluginData struct {
 }
 
 func (plugin *PluginData) readInput() (id []byte, data []byte, err error) {
-	header := make([]byte, 5)
+	header := make([]byte, 6)
 	if _, err := plugin.Stdin.Read(header); err != nil {
 		return nil, nil, err
 	}
 	// version := header[0]
-	length := int(binary.BigEndian.Uint32(header[1:]))
+	// command := header[1]
+	length := binary.BigEndian.Uint32(header[2:])
 
 	// 37 = uuid + separator + end byte
 	if length < 37 {
@@ -59,7 +62,7 @@ func (plugin *PluginData) writeOutput(id []byte, data []byte) error {
 		}
 		counter += CHUNK_SIZE
 
-		total, err := EncodeCommand(id, chunk)
+		total, err := EncodeCommand(id, COMMAND_DATA, chunk)
 		if err != nil {
 			return err
 		}
@@ -69,11 +72,28 @@ func (plugin *PluginData) writeOutput(id []byte, data []byte) error {
 		}
 	}
 
-	eof, err := EncodeCommand(id, []byte{})
+	eof, err := EncodeCommand(id, COMMAND_DATA, []byte{})
 	if err != nil {
 		return err
 	}
 	_, err = plugin.Stdout.Write(eof)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (plugin *PluginData) writeError(id []byte, data string) error {
+	if len([]byte(data)) > CHUNK_SIZE {
+		log.Fatal("error message size is over chunk size")
+	}
+
+	total, err := EncodeCommand(id, COMMAND_ERROR, []byte(data))
+	if err != nil {
+		return err
+	}
+	_, err = plugin.Stdout.Write(total)
 	if err != nil {
 		return err
 	}
@@ -101,28 +121,49 @@ func NewPluginClient(Router map[string]func(json []byte) ([]byte, error), Stdin 
 	return PluginData{Router: Router, Stdin: Stdin, Stdout: Stdout}
 }
 
-func PluginServe(plugin PluginData) error {
+func PluginServe(plugin PluginData, max_concurrent int) error {
+	mut := sync.RWMutex{}
+	concurrent := 0
+
 	for {
 		id, data, err := plugin.readInput()
 		if err != nil {
 			return err
 		}
 
+		mut.RLock()
+		curr_req := concurrent
+		mut.RUnlock()
+
+		if curr_req >= max_concurrent {
+			_ = plugin.writeError(id, "plugin error: MAX CONCURRENT command reached")
+			continue
+		}
+
 		sub, json := parseClientMessage(string(data))
 
+		mut.Lock()
+		concurrent++
+		mut.Unlock()
 		go func() {
+			defer func() {
+				mut.Lock()
+				concurrent--
+				mut.Unlock()
+			}()
+
 			function := plugin.Router[sub]
 			if function != nil {
 				result, err := function(json)
 				if err != nil {
-					_ = plugin.writeOutput(id, []byte("plugin error: "+err.Error()))
+					_ = plugin.writeError(id, "plugin error: "+err.Error())
 				} else {
 					if err := plugin.writeOutput(id, result); err != nil {
-						_ = plugin.writeOutput(id, []byte("plugin error: "+err.Error()))
+						_ = plugin.writeError(id, "plugin error: "+err.Error())
 					}
 				}
 			} else {
-				_ = plugin.writeOutput(id, []byte("plugin error: "+sub+" not found"))
+				_ = plugin.writeError(id, "plugin error: "+sub+" not found")
 			}
 		}()
 	}

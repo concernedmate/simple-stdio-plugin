@@ -107,7 +107,11 @@ func (plugin *PluginRunning) Command(command []byte) ([]byte, error) {
 	channels := plugin.cmd_map[id]
 	plugin.cmd_mutex.RUnlock()
 
+	fmt.Println(id, "started")
+
 	plugin.write_chan <- PluginComm{id: []byte(id), data: command}
+
+	fmt.Println(id, "done")
 
 	select {
 	case err := <-channels.err:
@@ -131,7 +135,7 @@ func (plugin *PluginRunning) runner() error {
 			}
 			plugin.cmd_mutex.RUnlock()
 
-			encoded, err := EncodeCommand(comm.id, comm.data)
+			encoded, err := EncodeCommand(comm.id, COMMAND_DATA, comm.data)
 			if err != nil {
 				plugin.cmd_mutex.Lock()
 				plugin.cmd_map[string(comm.id)].err <- []byte(err.Error())
@@ -174,16 +178,19 @@ func (plugin *PluginRunning) reader() error {
 		case <-plugin.ctx.Done():
 			return nil
 		default:
-			header := make([]byte, 5)
+			header := make([]byte, 6)
 			n, err := plugin.pipe_out.Read(header)
 			if err != nil {
 				return err
 			}
-			if n != 5 {
+			if n != 6 {
 				return errors.New("invalid packet length")
 			}
 
-			length := binary.BigEndian.Uint32(header[1:])
+			// version := header[0]
+			command := header[1]
+
+			length := binary.BigEndian.Uint32(header[2:])
 			// 37 = uuid + separator + end byte
 			if length < 37 {
 				return errors.New("invalid response")
@@ -201,19 +208,30 @@ func (plugin *PluginRunning) reader() error {
 			id := response[0:36]
 			resp := response[37:] // +1 separator
 
-			if len(resp) == 1 {
+			if command == byte(COMMAND_ERROR) {
 				result_mutex.Lock()
-				final := PluginComm{id: id, data: result[string(id)]}
+				final := PluginComm{id: id, data: resp[:len(resp)-1]}
 				// reset after
 				delete(result, string(id))
 				result_mutex.Unlock()
 
 				plugin.resp_chan <- final
 			} else {
-				result_mutex.Lock()
-				result[string(id)] = append(result[string(id)], resp[:len(resp)-1]...)
-				result_mutex.Unlock()
+				if len(resp) == 1 {
+					result_mutex.Lock()
+					final := PluginComm{id: id, data: result[string(id)]}
+					// reset after
+					delete(result, string(id))
+					result_mutex.Unlock()
+
+					plugin.resp_chan <- final
+				} else {
+					result_mutex.Lock()
+					result[string(id)] = append(result[string(id)], resp[:len(resp)-1]...)
+					result_mutex.Unlock()
+				}
 			}
+
 		}
 	}
 }
@@ -297,9 +315,16 @@ func execPlugin(syncMap *sync.Map, location string, args ...string) error {
 	return nil
 }
 
-// 03 0000 id ... 0xAD
+type EncodedCommandType uint8
+
+const (
+	COMMAND_DATA  EncodedCommandType = 1
+	COMMAND_ERROR EncodedCommandType = 2
+)
+
+// 04 0000 id ... 0xAD
 // version-length-id-data-ending
-func EncodeCommand(uuid []byte, data []byte) ([]byte, error) {
+func EncodeCommand(uuid []byte, command_type EncodedCommandType, data []byte) ([]byte, error) {
 	if len(uuid) != 36 {
 		return nil, fmt.Errorf("invalid uuid length")
 	}
@@ -311,13 +336,15 @@ func EncodeCommand(uuid []byte, data []byte) ([]byte, error) {
 
 	result := make([]byte, total)
 
-	result[0] = 3                                                         // version
+	result[0] = 4                                                         // version
+	result[1] = byte(command_type)                                        // type
 	binary.BigEndian.PutUint32(result[1:], uint32(len(uuid)+len(data)+1)) // uuid + data length
 
 	combined := append(uuid, []byte("-")...)
 	combined = append(combined, data...)
 
 	result = slices.Replace(result, 5, 5+len(uuid)+len(data)+1, combined...)
+
 	result[len(result)-1] = 0xAD
 
 	return result, nil
