@@ -10,7 +10,7 @@ import (
 	"sync"
 )
 
-const CHUNK_SIZE = 4096
+const CHUNK_SIZE = 2048
 
 type PluginData struct {
 	Router map[string]func(json []byte) ([]byte, error)

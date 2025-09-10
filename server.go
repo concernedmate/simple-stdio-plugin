@@ -3,7 +3,6 @@ package simplestdioplugin
 import (
 	"context"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -112,15 +111,13 @@ func (plugin *PluginRunning) Command(command []byte) ([]byte, error) {
 
 	select {
 	case err := <-channels.err:
-		return nil, errors.New(string(err))
+		return nil, errors.New("receive chan error:" + string(err))
 	case result := <-channels.out:
 		return result, nil
 	}
 }
 
 func (plugin *PluginRunning) runner() error {
-	defer plugin.cancel()
-
 	for {
 		select {
 		case <-plugin.ctx.Done():
@@ -139,8 +136,6 @@ func (plugin *PluginRunning) runner() error {
 				plugin.cmd_map[string(comm.id)].close()
 				plugin.cmd_mutex.Unlock()
 			}
-
-			fmt.Println(hex.EncodeToString(encoded))
 
 			_, err = plugin.pipe_in.Write(encoded)
 			if err != nil {
@@ -168,8 +163,6 @@ func (plugin *PluginRunning) runner() error {
 }
 
 func (plugin *PluginRunning) reader() error {
-	defer plugin.cancel()
-
 	result := make(map[string][]byte)
 	result_mutex := sync.Mutex{}
 	for {
@@ -180,10 +173,10 @@ func (plugin *PluginRunning) reader() error {
 			header := make([]byte, 6)
 			n, err := plugin.pipe_out.Read(header)
 			if err != nil {
-				return err
+				return errors.New("failed to read header: " + err.Error())
 			}
 			if n != 6 {
-				return errors.New("invalid packet length")
+				return errors.New("invalid header packet length")
 			}
 
 			// version := header[0]
@@ -198,10 +191,11 @@ func (plugin *PluginRunning) reader() error {
 			response := make([]byte, length+1)
 			n, err = plugin.pipe_out.Read(response)
 			if err != nil {
-				return err
+				return errors.New("failed to read data: " + err.Error())
 			}
 			if n != int(length)+1 {
-				return errors.New("invalid packet length")
+				fmt.Println(n, length+1, string(response))
+				return errors.New("invalid data packet length")
 			}
 
 			id := response[0:36]
@@ -230,7 +224,6 @@ func (plugin *PluginRunning) reader() error {
 					result_mutex.Unlock()
 				}
 			}
-
 		}
 	}
 }
@@ -288,14 +281,14 @@ func execPlugin(syncMap *sync.Map, location string, args ...string) error {
 	fmt.Printf("started plugin %s (%s) pid: %d \n", name, location, cmd.Process.Pid)
 
 	go func() {
-		if plugin_running.runner(); err != nil {
+		if err := plugin_running.runner(); err != nil {
 			fmt.Printf("plugin runner %s exited: %s\n", name, err.Error())
 		}
 		cancel()
 	}()
 
 	go func() {
-		if plugin_running.reader(); err != nil {
+		if err := plugin_running.reader(); err != nil {
 			fmt.Printf("plugin reader %s exited: %s\n", name, err.Error())
 		}
 		cancel()
