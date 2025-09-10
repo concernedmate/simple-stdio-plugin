@@ -3,6 +3,7 @@ package simplestdioplugin
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -138,6 +139,8 @@ func (plugin *PluginRunning) runner() error {
 				plugin.cmd_map[string(comm.id)].close()
 				plugin.cmd_mutex.Unlock()
 			}
+
+			fmt.Println(hex.EncodeToString(encoded))
 
 			_, err = plugin.pipe_in.Write(encoded)
 			if err != nil {
@@ -334,7 +337,7 @@ func EncodeCommand(uuid []byte, command_type EncodedCommandType, data []byte) ([
 
 	result[0] = 4                                                         // version
 	result[1] = byte(command_type)                                        // type
-	binary.BigEndian.PutUint32(result[1:], uint32(len(uuid)+len(data)+1)) // uuid + data length
+	binary.BigEndian.PutUint32(result[2:], uint32(len(uuid)+len(data)+1)) // uuid + data length
 
 	combined := append(uuid, []byte("-")...)
 	combined = append(combined, data...)
