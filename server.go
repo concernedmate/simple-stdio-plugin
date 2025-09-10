@@ -107,11 +107,7 @@ func (plugin *PluginRunning) Command(command []byte) ([]byte, error) {
 	channels := plugin.cmd_map[id]
 	plugin.cmd_mutex.RUnlock()
 
-	fmt.Println(id, "started")
-
 	plugin.write_chan <- PluginComm{id: []byte(id), data: command}
-
-	fmt.Println(id, "done")
 
 	select {
 	case err := <-channels.err:
@@ -322,14 +318,14 @@ const (
 	COMMAND_ERROR EncodedCommandType = 2
 )
 
-// 04 0000 id ... 0xAD
-// version-length-id-data-ending
+// 04 01 0000 id ... 0xAD
+// version-command-length-id-data-ending
 func EncodeCommand(uuid []byte, command_type EncodedCommandType, data []byte) ([]byte, error) {
 	if len(uuid) != 36 {
 		return nil, fmt.Errorf("invalid uuid length")
 	}
 
-	var total int = 1 + 4 + len(uuid) + 1 + len(data) + 1
+	var total int = 2 + 4 + len(uuid) + 1 + len(data) + 1
 	if total > math.MaxInt32 {
 		return nil, fmt.Errorf("command too long: %d bytes (max 2147483647)", total)
 	}
@@ -343,7 +339,7 @@ func EncodeCommand(uuid []byte, command_type EncodedCommandType, data []byte) ([
 	combined := append(uuid, []byte("-")...)
 	combined = append(combined, data...)
 
-	result = slices.Replace(result, 5, 5+len(uuid)+len(data)+1, combined...)
+	result = slices.Replace(result, 6, 6+len(uuid)+len(data)+1, combined...)
 
 	result[len(result)-1] = 0xAD
 
