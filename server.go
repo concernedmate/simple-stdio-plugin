@@ -175,23 +175,25 @@ func (plugin *PluginRunning) reader() error {
 			return nil
 		default:
 			header := make([]byte, 5)
-			if _, err := plugin.pipe_out.Read(header); err != nil {
+			n, err := plugin.pipe_out.Read(header)
+			if err != nil {
 				return err
+			}
+			if n != 5 {
+				return errors.New("invalid packet length")
 			}
 
 			length := binary.BigEndian.Uint32(header[1:])
-
 			// 37 = uuid + separator + end byte
 			if length < 37 {
 				return errors.New("invalid response")
 			}
 
 			response := make([]byte, length+1)
-			n, err := plugin.pipe_out.Read(response)
+			n, err = plugin.pipe_out.Read(response)
 			if err != nil {
 				return err
 			}
-
 			if n != int(length)+1 {
 				return errors.New("invalid packet length")
 			}

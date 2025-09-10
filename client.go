@@ -47,11 +47,8 @@ func (plugin *PluginData) readInput() (id []byte, data []byte, err error) {
 func (plugin *PluginData) writeOutput(id []byte, data []byte) error {
 	counter := 0
 	for {
-		if counter == len(data) {
+		if counter >= len(data) {
 			break
-		}
-		if counter > len(data) {
-			return errors.New("corrupted data")
 		}
 
 		var chunk []byte
