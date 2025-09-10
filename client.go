@@ -55,7 +55,7 @@ func (plugin *PluginData) writeOutput(id []byte, data []byte) error {
 		}
 
 		var chunk []byte
-		if counter+CHUNK_SIZE > len(data) {
+		if counter+CHUNK_SIZE >= len(data) {
 			chunk = data[counter:]
 		} else {
 			chunk = data[counter:(counter + CHUNK_SIZE)]
@@ -121,11 +121,11 @@ func PluginServe(plugin PluginData) error {
 					_ = plugin.writeOutput(id, []byte("plugin error: "+err.Error()))
 				} else {
 					if err := plugin.writeOutput(id, result); err != nil {
-						plugin.writeOutput(id, []byte("plugin error: "+err.Error()))
+						_ = plugin.writeOutput(id, []byte("plugin error: "+err.Error()))
 					}
 				}
 			} else {
-				plugin.writeOutput(id, []byte("plugin error: "+sub))
+				_ = plugin.writeOutput(id, []byte("plugin error: "+sub+" not found"))
 			}
 		}()
 	}
