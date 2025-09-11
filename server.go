@@ -266,17 +266,16 @@ func execPlugin(syncMap *sync.Map, location string, args ...string) error {
 		return err
 	}
 
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return err
+	}
+
 	plugin_running := &PluginRunning{
 		Name: name, Path: location, cmd: cmd,
 		ctx: ctx, cancel: cancel, cmd_mutex: sync.RWMutex{}, cmd_map: make(map[string]CommandComm),
 		write_chan: make(chan PluginComm), resp_chan: make(chan PluginComm),
 		pipe_in: pipein, pipe_out: pipeout, pipe_err: pipeerr,
-	}
-	syncMap.Store(name, plugin_running)
-
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return err
 	}
 	fmt.Printf("started plugin %s (%s) pid: %d \n", name, location, cmd.Process.Pid)
 
@@ -303,6 +302,8 @@ func execPlugin(syncMap *sync.Map, location string, args ...string) error {
 		close(plugin_running.resp_chan)
 		close(plugin_running.write_chan)
 	}()
+
+	syncMap.Store(name, plugin_running)
 
 	return nil
 }
