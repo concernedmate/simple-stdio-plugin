@@ -284,21 +284,17 @@ func execPlugin(logger func(string), syncMap *sync.Map, location string, args ..
 	logger(fmt.Sprintf("started plugin %s (%s) pid: %d", name, location, cmd.Process.Pid))
 
 	go func() {
-		for {
-			if err := plugin_running.runner(); err != nil {
-				logger(fmt.Sprintf("plugin runner %s exited: %s", name, err.Error()))
-			}
-			cancel()
+		if err := plugin_running.runner(); err != nil {
+			logger(fmt.Sprintf("plugin runner %s exited: %s", name, err.Error()))
 		}
+		cancel()
 	}()
 
 	go func() {
-		for {
-			if err := plugin_running.reader(); err != nil {
-				logger(fmt.Sprintf("plugin reader %s exited: %s", name, err.Error()))
-			}
-			cancel()
+		if err := plugin_running.reader(); err != nil {
+			logger(fmt.Sprintf("plugin reader %s exited: %s", name, err.Error()))
 		}
+		cancel()
 	}()
 
 	go func() {
