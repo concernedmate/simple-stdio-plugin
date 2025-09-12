@@ -16,13 +16,13 @@ func main() {
 	}()
 
 	for {
-		plugins, err := mapped.GetPluginList()
+		plugins, err := mapped.GetPluginNames()
 		if err != nil {
 			log.Fatal(err)
 		}
 
 		if len(plugins) > 0 {
-			name := plugins[0].Name
+			name := plugins[0]
 
 			go func() {
 				for {
