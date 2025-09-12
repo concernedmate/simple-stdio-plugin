@@ -19,7 +19,8 @@ import (
 )
 
 type PluginMap struct {
-	Map *sync.Map
+	Map     *sync.Map
+	LogFunc func(message string)
 }
 
 func (mapped *PluginMap) GetPluginList() ([]*PluginRunning, error) {
@@ -200,7 +201,6 @@ func (plugin *PluginRunning) reader() error {
 				return errors.New("failed to read data: " + err.Error())
 			}
 			if n != int(length)+1 {
-				fmt.Println(n, length+1, string(response))
 				return errors.New("invalid data packet length")
 			}
 
@@ -250,7 +250,7 @@ func findPluginPath(base_location string, extension string) ([]string, error) {
 	return result, nil
 }
 
-func execPlugin(syncMap *sync.Map, location string, args ...string) error {
+func execPlugin(logger func(string), syncMap *sync.Map, location string, args ...string) error {
 	name := path.Base(location)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -283,25 +283,37 @@ func execPlugin(syncMap *sync.Map, location string, args ...string) error {
 		write_chan: make(chan PluginComm), resp_chan: make(chan PluginComm),
 		pipe_in: pipein, pipe_out: pipeout, pipe_err: pipeerr,
 	}
-	fmt.Printf("started plugin %s (%s) pid: %d \n", name, location, cmd.Process.Pid)
+	logger(fmt.Sprintf("started plugin %s (%s) pid: %d \n", name, location, cmd.Process.Pid))
 
 	go func() {
-		if err := plugin_running.runner(); err != nil {
-			fmt.Printf("plugin runner %s exited: %s\n", name, err.Error())
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				if err := plugin_running.runner(); err != nil {
+					logger(fmt.Sprintf("plugin runner %s exited: %s\n", name, err.Error()))
+				}
+			}
 		}
-		cancel()
 	}()
 
 	go func() {
-		if err := plugin_running.reader(); err != nil {
-			fmt.Printf("plugin reader %s exited: %s\n", name, err.Error())
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				if err := plugin_running.reader(); err != nil {
+					logger(fmt.Sprintf("plugin reader %s exited: %s\n", name, err.Error()))
+				}
+			}
 		}
-		cancel()
 	}()
 
 	go func() {
 		if err := cmd.Wait(); err != nil {
-			fmt.Printf("plugin %s exited: %s\n", name, err.Error())
+			logger(fmt.Sprintf("plugin %s exited: %s\n", name, err.Error()))
 		}
 		cancel()
 
@@ -349,28 +361,37 @@ func EncodeCommand(uuid []byte, command_type EncodedCommandType, data []byte) ([
 	return result, nil
 }
 
-func NewPluginMap() PluginMap {
-	return PluginMap{Map: &sync.Map{}}
+func NewPluginMap(log_func ...func(string)) PluginMap {
+	data := PluginMap{Map: &sync.Map{}}
+	if len(log_func) > 0 {
+		data.LogFunc = log_func[0]
+	}
+
+	return data
 }
 
-func PluginRunner(sync *PluginMap, base_location, extension string, args ...string) error {
+func PluginRunner(config *PluginMap, base_location, extension string, args ...string) error {
+	if config.LogFunc == nil {
+		config.LogFunc = func(message string) {}
+	}
+
 	locations, err := findPluginPath(base_location, extension)
 	if err != nil {
 		return err
 	}
 
 	for _, val := range locations {
-		if err := execPlugin(sync.Map, val, args...); err != nil {
+		if err := execPlugin(config.LogFunc, config.Map, val, args...); err != nil {
 			return err
 		}
 	}
 
 	for {
-		sync.Map.Range(func(key, value any) bool {
+		config.Map.Range(func(key, value any) bool {
 			p, ok := value.(*PluginRunning)
 			if ok {
 				if p.cmd.ProcessState != nil {
-					_ = execPlugin(sync.Map, p.Path, args...)
+					_ = execPlugin(config.LogFunc, config.Map, p.Path, args...)
 				}
 			}
 
