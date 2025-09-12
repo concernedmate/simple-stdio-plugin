@@ -22,7 +22,7 @@ type PluginMap struct {
 	LogFunc func(message string)
 }
 
-func (mapped *PluginMap) GetPluginNames() ([]string, error) {
+func (mapped *PluginMap) GetPluginNames() []string {
 	result := []string{}
 	mapped.Map.Range(func(key, value any) bool {
 		data, ok := value.(*PluginRunning)
@@ -32,7 +32,7 @@ func (mapped *PluginMap) GetPluginNames() ([]string, error) {
 		return true
 	})
 
-	return result, nil
+	return result
 }
 
 func (mapped *PluginMap) GetPluginByName(plugin_name string) (*PluginRunning, error) {
