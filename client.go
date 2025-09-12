@@ -4,13 +4,12 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"log"
 	"os"
 	"strings"
 	"sync"
 )
 
-const CHUNK_SIZE = 2048
+const CHUNK_SIZE = 3072
 
 type PluginData struct {
 	Router map[string]func(json []byte) ([]byte, error)
@@ -24,9 +23,16 @@ func (plugin *PluginData) readInput() (id []byte, data []byte, err error) {
 	if _, err := plugin.Stdin.Read(header); err != nil {
 		return nil, nil, err
 	}
-	// version := header[0]
-	// command := header[1]
+	version := header[0]
+	command := header[1]
 	length := binary.BigEndian.Uint32(header[2:])
+
+	if version != 4 {
+		return nil, nil, errors.New("invalid protocol version")
+	}
+	if command != byte(COMMAND_DATA) && command != byte(COMMAND_ERROR) {
+		return nil, nil, errors.New("invalid protocol command")
+	}
 
 	// 37 = uuid + separator + end byte
 	if length < 37 {
@@ -85,11 +91,13 @@ func (plugin *PluginData) writeOutput(id []byte, data []byte) error {
 }
 
 func (plugin *PluginData) writeError(id []byte, data string) error {
-	if len([]byte(data)) > CHUNK_SIZE {
-		log.Fatal("error message size is over chunk size")
+	bytes := []byte(data)
+
+	if len(bytes) > CHUNK_SIZE {
+		bytes = bytes[:CHUNK_SIZE]
 	}
 
-	total, err := EncodeCommand(id, COMMAND_ERROR, []byte(data))
+	total, err := EncodeCommand(id, COMMAND_ERROR, bytes)
 	if err != nil {
 		return err
 	}
@@ -133,27 +141,27 @@ func PluginServe(plugin PluginData, max_conn ...int) error {
 	for {
 		id, data, err := plugin.readInput()
 		if err != nil {
-			return err
+			_ = plugin.writeError(id, "error: "+err.Error())
+			continue
 		}
 
 		mut.RLock()
-		curr_req := concurrent
-		mut.RUnlock()
-
-		if curr_req >= max_concurrent {
-			_ = plugin.writeError(id, "plugin error: MAX CONCURRENT command reached")
+		if concurrent >= max_concurrent {
+			_ = plugin.writeError(id, "error: MAX CONCURRENT command reached")
+			mut.RUnlock()
 			continue
 		}
+		mut.RUnlock()
 
 		sub, json := parseClientMessage(string(data))
 
 		mut.Lock()
-		concurrent++
+		concurrent += 1
 		mut.Unlock()
 		go func() {
 			defer func() {
 				mut.Lock()
-				concurrent--
+				concurrent -= 1
 				mut.Unlock()
 			}()
 
@@ -161,14 +169,14 @@ func PluginServe(plugin PluginData, max_conn ...int) error {
 			if function != nil {
 				result, err := function(json)
 				if err != nil {
-					_ = plugin.writeError(id, "plugin error: "+err.Error())
+					_ = plugin.writeError(id, "error func: "+err.Error())
 				} else {
 					if err := plugin.writeOutput(id, result); err != nil {
-						_ = plugin.writeError(id, "plugin error: "+err.Error())
+						_ = plugin.writeError(id, "error write: "+err.Error())
 					}
 				}
 			} else {
-				_ = plugin.writeError(id, "plugin error: "+sub+" not found")
+				_ = plugin.writeError(id, "error sub: "+sub+" not found")
 			}
 		}()
 	}

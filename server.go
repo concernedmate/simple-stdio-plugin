@@ -179,8 +179,14 @@ func (plugin *PluginRunning) reader() error {
 				return errors.New("invalid header packet length")
 			}
 
-			// version := header[0]
+			version := header[0]
 			command := header[1]
+			if version != 4 {
+				return errors.New("invalid protocol version")
+			}
+			if command != byte(COMMAND_DATA) && command != byte(COMMAND_ERROR) {
+				return errors.New("invalid protocol command")
+			}
 
 			length := binary.BigEndian.Uint32(header[2:])
 			// 37 = uuid + separator + end byte
