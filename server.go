@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"os"
 	"os/exec"
@@ -50,8 +49,9 @@ func (mapped *PluginMap) GetPluginByName(plugin_name string) (*PluginRunning, er
 }
 
 type PluginRunning struct {
-	Name string
-	Path string
+	Name    string
+	Path    string
+	LogFunc func(message string)
 
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -62,9 +62,8 @@ type PluginRunning struct {
 	cmd_map   map[string]CommandComm
 
 	cmd      *exec.Cmd
-	pipe_in  io.WriteCloser
-	pipe_out io.ReadCloser
-	pipe_err io.ReadCloser
+	pipe_in  *os.File
+	pipe_out *os.File
 }
 
 type PluginComm struct {
@@ -256,21 +255,20 @@ func execPlugin(logger func(string), syncMap *sync.Map, location string, args ..
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, location, args...)
 
-	pipein, err := cmd.StdinPipe()
+	pr1, pw1, err := os.Pipe()
 	if err != nil {
 		cancel()
 		return err
 	}
-	pipeout, err := cmd.StdoutPipe()
+
+	pr2, pw2, err := os.Pipe()
 	if err != nil {
 		cancel()
 		return err
 	}
-	pipeerr, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		return err
-	}
+
+	cmd.Stdin = pr1
+	cmd.Stdout = pw2
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -278,44 +276,44 @@ func execPlugin(logger func(string), syncMap *sync.Map, location string, args ..
 	}
 
 	plugin_running := &PluginRunning{
-		Name: name, Path: location, cmd: cmd,
-		ctx: ctx, cancel: cancel, cmd_mutex: sync.RWMutex{}, cmd_map: make(map[string]CommandComm),
+		Name: name, Path: location, cmd: cmd, LogFunc: logger, ctx: ctx, cancel: cancel,
+		cmd_mutex: sync.RWMutex{}, cmd_map: make(map[string]CommandComm),
 		write_chan: make(chan PluginComm), resp_chan: make(chan PluginComm),
-		pipe_in: pipein, pipe_out: pipeout, pipe_err: pipeerr,
+		pipe_in: pw1, pipe_out: pr2,
 	}
-	logger(fmt.Sprintf("started plugin %s (%s) pid: %d \n", name, location, cmd.Process.Pid))
+	logger(fmt.Sprintf("started plugin %s (%s) pid: %d", name, location, cmd.Process.Pid))
 
 	go func() {
 		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				if err := plugin_running.runner(); err != nil {
-					logger(fmt.Sprintf("plugin runner %s exited: %s\n", name, err.Error()))
-				}
+			if err := plugin_running.runner(); err != nil {
+				logger(fmt.Sprintf("plugin runner %s exited: %s", name, err.Error()))
 			}
+			cancel()
 		}
 	}()
 
 	go func() {
 		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				if err := plugin_running.reader(); err != nil {
-					logger(fmt.Sprintf("plugin reader %s exited: %s\n", name, err.Error()))
-				}
+			if err := plugin_running.reader(); err != nil {
+				logger(fmt.Sprintf("plugin reader %s exited: %s", name, err.Error()))
 			}
+			cancel()
 		}
 	}()
 
 	go func() {
 		if err := cmd.Wait(); err != nil {
-			logger(fmt.Sprintf("plugin %s exited: %s\n", name, err.Error()))
+			logger(fmt.Sprintf("plugin %s exited: %s", name, err.Error()))
 		}
 		cancel()
+
+		// cleanup
+
+		pr1.Close()
+		pw1.Close()
+
+		pr2.Close()
+		pw2.Close()
 
 		close(plugin_running.resp_chan)
 		close(plugin_running.write_chan)
