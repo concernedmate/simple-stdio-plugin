@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	mapped := simplestdioplugin.NewPluginMap()
+	mapped := simplestdioplugin.NewPluginMap(func(s string) { fmt.Println(s) })
 	go func() {
 		if err := simplestdioplugin.PluginRunner(&mapped, "./plugins", "exe"); err != nil {
 			log.Fatal(err)

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"os/exec"
@@ -267,8 +268,15 @@ func execPlugin(logger func(string), syncMap *sync.Map, location string, args ..
 		return err
 	}
 
+	pr3, pw3, err := os.Pipe()
+	if err != nil {
+		cancel()
+		return err
+	}
+
 	cmd.Stdin = pr1
 	cmd.Stdout = pw2
+	cmd.Stderr = pw3
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -295,6 +303,33 @@ func execPlugin(logger func(string), syncMap *sync.Map, location string, args ..
 			logger(fmt.Sprintf("plugin reader %s exited: %s", name, err.Error()))
 		}
 		cancel()
+	}()
+
+	go func() {
+		buffer := make([]byte, 10)
+
+		result := []byte{}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				n, err := pr3.Read(buffer)
+				if err != nil {
+					if err == io.EOF {
+						logger(fmt.Sprintf("plugin %s stderr: \n%s", name, string(result)))
+						return
+					}
+					logger(fmt.Sprintf("plugin %s failed to read stderr: %s", name, err.Error()))
+				}
+
+				result = append(result, buffer[0:n]...)
+				if n < 10 {
+					logger(fmt.Sprintf("plugin %s stderr: \n%s", name, string(result)))
+					return
+				}
+			}
+		}
 	}()
 
 	go func() {
