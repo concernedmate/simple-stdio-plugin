@@ -155,10 +155,6 @@ func (plugin *PluginRunning) runner() error {
 			plugin.cmd_mutex.Lock()
 			plugin.cmd_map[string(comm.id)].out <- comm.data
 			plugin.cmd_mutex.Unlock()
-		default:
-			if plugin.cmd.ProcessState != nil {
-				return errors.New("process exited")
-			}
 		}
 	}
 }
