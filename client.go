@@ -1,9 +1,7 @@
 package simplestdioplugin
 
 import (
-	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"os"
 	"strings"
 	"sync"
@@ -19,94 +17,19 @@ type PluginData struct {
 }
 
 func (plugin *PluginData) readInput() (id []byte, data []byte, err error) {
-	header := make([]byte, 6)
-	if _, err := plugin.Stdin.Read(header); err != nil {
-		return nil, nil, err
-	}
-	version := header[0]
-	command := header[1]
-	length := binary.BigEndian.Uint32(header[2:])
-
-	if version != 4 {
-		return nil, nil, errors.New("invalid protocol version")
-	}
-	if command != byte(COMMAND_DATA) && command != byte(COMMAND_ERROR) {
-		return nil, nil, errors.New("invalid protocol command")
-	}
-
-	// 37 = uuid + separator + end byte
-	if length < 37 {
-		return nil, nil, errors.New("invalid response")
-	}
-
-	response := make([]byte, length+1) // plus ending
-	_, err = plugin.Stdin.Read(response)
+	result, err := ReadAll(plugin.Stdin)
 	if err != nil {
 		return nil, nil, err
 	}
-
-	id = response[0:36]
-	data = response[37:] // +1 separator
-
-	data = data[:len(data)-1]
-
-	return id, data, nil
+	return result.uuid, result.data, nil
 }
 
 func (plugin *PluginData) writeOutput(id []byte, data []byte) error {
-	counter := 0
-	for {
-		if counter >= len(data) {
-			break
-		}
-
-		var chunk []byte
-		if counter+CHUNK_SIZE >= len(data) {
-			chunk = data[counter:]
-		} else {
-			chunk = data[counter:(counter + CHUNK_SIZE)]
-		}
-		counter += CHUNK_SIZE
-
-		total, err := EncodeCommand(id, COMMAND_DATA, chunk)
-		if err != nil {
-			return err
-		}
-		_, err = plugin.Stdout.Write(total)
-		if err != nil {
-			return err
-		}
-	}
-
-	eof, err := EncodeCommand(id, COMMAND_DATA, []byte{})
-	if err != nil {
-		return err
-	}
-	_, err = plugin.Stdout.Write(eof)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return WriteAll(id, data, plugin.Stdout)
 }
 
 func (plugin *PluginData) writeError(id []byte, data string) error {
-	bytes := []byte(data)
-
-	if len(bytes) > CHUNK_SIZE {
-		bytes = bytes[:CHUNK_SIZE]
-	}
-
-	total, err := EncodeCommand(id, COMMAND_ERROR, bytes)
-	if err != nil {
-		return err
-	}
-	_, err = plugin.Stdout.Write(total)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return WriteAll(id, []byte(data), plugin.Stdout)
 }
 
 func parseClientMessage(msg string) (sub string, jsondata []byte) {

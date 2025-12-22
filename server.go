@@ -2,15 +2,12 @@ package simplestdioplugin
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"os/exec"
 	"path"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -54,13 +51,11 @@ type PluginRunning struct {
 	Path    string
 	LogFunc func(message string)
 
-	ctx        context.Context
-	cancel     context.CancelFunc
 	write_chan chan PluginComm
 	resp_chan  chan PluginComm
 
 	cmd_mutex sync.RWMutex
-	cmd_map   map[string]CommandComm
+	cmd_map   map[string]chan CommandComm
 
 	cmd      *exec.Cmd
 	pipe_in  *os.File
@@ -73,20 +68,8 @@ type PluginComm struct {
 }
 
 type CommandComm struct {
-	out chan []byte
-	err chan []byte
-}
-
-func (comm CommandComm) close() {
-	close(comm.out)
-	close(comm.err)
-}
-
-func (plugin *PluginRunning) createChannel(id string) {
-	plugin.cmd_mutex.Lock()
-	defer plugin.cmd_mutex.Unlock()
-
-	plugin.cmd_map[id] = CommandComm{out: make(chan []byte), err: make(chan []byte)}
+	out []byte
+	err []byte
 }
 
 func (plugin *PluginRunning) Command(command []byte) ([]byte, error) {
@@ -96,12 +79,14 @@ func (plugin *PluginRunning) Command(command []byte) ([]byte, error) {
 
 	id := uuid.New().String()
 
-	plugin.createChannel(id)
+	plugin.cmd_mutex.Lock()
+	plugin.cmd_map[id] = make(chan CommandComm)
+	plugin.cmd_mutex.Unlock()
 	defer func() {
 		plugin.cmd_mutex.Lock()
 		defer plugin.cmd_mutex.Unlock()
 
-		plugin.cmd_map[id].close()
+		close(plugin.cmd_map[id])
 	}()
 
 	plugin.cmd_mutex.RLock()
@@ -110,121 +95,78 @@ func (plugin *PluginRunning) Command(command []byte) ([]byte, error) {
 
 	plugin.write_chan <- PluginComm{id: []byte(id), data: command}
 
-	select {
-	case err := <-channels.err:
-		return nil, errors.New("receive chan error:" + string(err))
-	case result := <-channels.out:
-		return result, nil
+	result := <-channels
+	if result.err != nil {
+		return nil, errors.New(string(result.err))
 	}
+	return result.out, nil
 }
 
-func (plugin *PluginRunning) runner() error {
+func (plugin *PluginRunning) runner(ctx context.Context) error {
 	for {
 		select {
-		case <-plugin.ctx.Done():
+		case <-ctx.Done():
 			return nil
 		case comm := <-plugin.write_chan:
 			plugin.cmd_mutex.RLock()
-			if plugin.cmd_map[string(comm.id)].err == nil {
-				return errors.New("channel err not exist")
+			if plugin.cmd_map[string(comm.id)] == nil {
+				return errors.New("channel not exist")
 			}
 			plugin.cmd_mutex.RUnlock()
 
-			encoded, err := EncodeCommand(comm.id, COMMAND_DATA, comm.data)
-			if err != nil {
-				plugin.cmd_mutex.Lock()
-				plugin.cmd_map[string(comm.id)].err <- []byte(err.Error())
-				plugin.cmd_map[string(comm.id)].close()
-				plugin.cmd_mutex.Unlock()
-			}
-
-			_, err = plugin.pipe_in.Write(encoded)
-			if err != nil {
-				plugin.cmd_mutex.Lock()
-				plugin.cmd_map[string(comm.id)].err <- []byte(err.Error())
-				plugin.cmd_map[string(comm.id)].close()
-				plugin.cmd_mutex.Unlock()
+			if err := WriteAll(comm.id, comm.data, plugin.pipe_in); err != nil {
+				return err
 			}
 		case comm := <-plugin.resp_chan:
 			plugin.cmd_mutex.RLock()
-			if plugin.cmd_map[string(comm.id)].out == nil {
+			if plugin.cmd_map[string(comm.id)] == nil {
 				return errors.New("channel out not exist")
 			}
 			plugin.cmd_mutex.RUnlock()
 
 			plugin.cmd_mutex.Lock()
-			plugin.cmd_map[string(comm.id)].out <- comm.data
+			plugin.cmd_map[string(comm.id)] <- CommandComm{out: comm.data, err: nil}
 			plugin.cmd_mutex.Unlock()
 		}
 	}
 }
 
-func (plugin *PluginRunning) reader() error {
+func (plugin *PluginRunning) reader(ctx context.Context) error {
 	result := make(map[string][]byte)
 	result_mutex := sync.Mutex{}
 	for {
 		select {
-		case <-plugin.ctx.Done():
+		case <-ctx.Done():
 			return nil
 		default:
-			header := make([]byte, 6)
-			n, err := plugin.pipe_out.Read(header)
+			read, err := ReadChunk(plugin.pipe_out)
 			if err != nil {
-				return errors.New("failed to read header: " + err.Error())
-			}
-			if n != 6 {
-				return errors.New("invalid header packet length")
+				return err
 			}
 
-			version := header[0]
-			command := header[1]
-			if version != 4 {
-				return errors.New("invalid protocol version")
-			}
-			if command != byte(COMMAND_DATA) && command != byte(COMMAND_ERROR) {
-				return errors.New("invalid protocol command")
-			}
-
-			length := binary.BigEndian.Uint32(header[2:])
-			// 37 = uuid + separator + end byte
-			if length < 37 {
-				return errors.New("invalid response")
-			}
-
-			response := make([]byte, length+1)
-			n, err = plugin.pipe_out.Read(response)
-			if err != nil {
-				return errors.New("failed to read data: " + err.Error())
-			}
-			if n != int(length)+1 {
-				return errors.New("invalid data packet length")
-			}
-
-			id := response[0:36]
-			resp := response[37:] // +1 separator
-
-			if command == byte(COMMAND_ERROR) {
+			switch read.command {
+			case COMMAND_ERROR:
 				result_mutex.Lock()
-				final := PluginComm{id: id, data: resp[:len(resp)-1]}
+				final := PluginComm{id: read.uuid, data: read.data[:len(read.data)-1]}
 				// reset after
-				delete(result, string(id))
+				delete(result, string(read.uuid))
 				result_mutex.Unlock()
 
 				plugin.resp_chan <- final
-			} else {
-				if len(resp) == 1 {
-					result_mutex.Lock()
-					final := PluginComm{id: id, data: result[string(id)]}
-					// reset after
-					delete(result, string(id))
-					result_mutex.Unlock()
+			case COMMAND_DATA:
+				result_mutex.Lock()
+				result[string(read.uuid)] = append(result[string(read.uuid)], read.data[:len(read.data)-1]...)
+				result_mutex.Unlock()
+			case COMMAND_FINAL:
+				result_mutex.Lock()
+				final := PluginComm{id: read.uuid, data: result[string(read.uuid)]}
+				// reset after
+				delete(result, string(read.uuid))
+				result_mutex.Unlock()
 
-					plugin.resp_chan <- final
-				} else {
-					result_mutex.Lock()
-					result[string(id)] = append(result[string(id)], resp[:len(resp)-1]...)
-					result_mutex.Unlock()
-				}
+				plugin.resp_chan <- final
+			default:
+				return errors.New("invalid command")
 			}
 		}
 	}
@@ -246,27 +188,23 @@ func findPluginPath(base_location string, extension string) ([]string, error) {
 	return result, nil
 }
 
-func execPlugin(logger func(string), syncMap *sync.Map, location string, args ...string) error {
+func execPlugin(ctx context.Context, logger func(string), syncMap *sync.Map, location string, args ...string) error {
 	name := path.Base(location)
 
-	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, location, args...)
 
 	pr1, pw1, err := os.Pipe()
 	if err != nil {
-		cancel()
 		return err
 	}
 
 	pr2, pw2, err := os.Pipe()
 	if err != nil {
-		cancel()
 		return err
 	}
 
 	pr3, pw3, err := os.Pipe()
 	if err != nil {
-		cancel()
 		return err
 	}
 
@@ -275,30 +213,27 @@ func execPlugin(logger func(string), syncMap *sync.Map, location string, args ..
 	cmd.Stderr = pw3
 
 	if err := cmd.Start(); err != nil {
-		cancel()
 		return err
 	}
 
 	plugin_running := &PluginRunning{
-		Name: name, Path: location, cmd: cmd, LogFunc: logger, ctx: ctx, cancel: cancel,
-		cmd_mutex: sync.RWMutex{}, cmd_map: make(map[string]CommandComm),
+		Name: name, Path: location, cmd: cmd, LogFunc: logger,
+		cmd_mutex: sync.RWMutex{}, cmd_map: make(map[string]chan CommandComm),
 		write_chan: make(chan PluginComm), resp_chan: make(chan PluginComm),
 		pipe_in: pw1, pipe_out: pr2,
 	}
 	logger(fmt.Sprintf("started plugin %s (%s) pid: %d", name, location, cmd.Process.Pid))
 
 	go func() {
-		if err := plugin_running.runner(); err != nil {
+		if err := plugin_running.runner(ctx); err != nil {
 			logger(fmt.Sprintf("plugin runner %s exited: %s", name, err.Error()))
 		}
-		cancel()
 	}()
 
 	go func() {
-		if err := plugin_running.reader(); err != nil {
+		if err := plugin_running.reader(ctx); err != nil {
 			logger(fmt.Sprintf("plugin reader %s exited: %s", name, err.Error()))
 		}
-		cancel()
 	}()
 
 	go func() {
@@ -332,10 +267,8 @@ func execPlugin(logger func(string), syncMap *sync.Map, location string, args ..
 		if err := cmd.Wait(); err != nil {
 			logger(fmt.Sprintf("plugin %s exited: %s", name, err.Error()))
 		}
-		cancel()
 
 		// cleanup
-
 		pr1.Close()
 		pw1.Close()
 
@@ -347,43 +280,7 @@ func execPlugin(logger func(string), syncMap *sync.Map, location string, args ..
 	}()
 
 	syncMap.Store(name, plugin_running)
-
 	return nil
-}
-
-type EncodedCommandType uint8
-
-const (
-	COMMAND_DATA  EncodedCommandType = 1
-	COMMAND_ERROR EncodedCommandType = 2
-)
-
-// 04 01 0000 id ... 0xAD
-// version-command-length-id-data-ending
-func EncodeCommand(uuid []byte, command_type EncodedCommandType, data []byte) ([]byte, error) {
-	if len(uuid) != 36 {
-		return nil, fmt.Errorf("invalid uuid length")
-	}
-
-	var total int = 2 + 4 + len(uuid) + 1 + len(data) + 1
-	if total > math.MaxInt32 {
-		return nil, fmt.Errorf("command too long: %d bytes (max 2147483647)", total)
-	}
-
-	result := make([]byte, total)
-
-	result[0] = 4                                                         // version
-	result[1] = byte(command_type)                                        // type
-	binary.BigEndian.PutUint32(result[2:], uint32(len(uuid)+len(data)+1)) // uuid + data length
-
-	combined := append(uuid, []byte("-")...)
-	combined = append(combined, data...)
-
-	result = slices.Replace(result, 6, 6+len(uuid)+len(data)+1, combined...)
-
-	result[len(result)-1] = 0xAD
-
-	return result, nil
 }
 
 func NewPluginMap(log_func ...func(string)) PluginMap {
@@ -395,7 +292,7 @@ func NewPluginMap(log_func ...func(string)) PluginMap {
 	return data
 }
 
-func PluginRunner(config *PluginMap, base_location, extension string, args ...string) error {
+func pluginRoutine(ctx context.Context, config *PluginMap, base_location, extension string, args ...string) error {
 	if config.LogFunc == nil {
 		config.LogFunc = func(message string) {}
 	}
@@ -406,22 +303,42 @@ func PluginRunner(config *PluginMap, base_location, extension string, args ...st
 	}
 
 	for _, val := range locations {
-		if err := execPlugin(config.LogFunc, config.Map, val, args...); err != nil {
+		if err := execPlugin(ctx, config.LogFunc, config.Map, val, args...); err != nil {
 			return err
 		}
 	}
 
 	for {
-		config.Map.Range(func(key, value any) bool {
-			p, ok := value.(*PluginRunning)
-			if ok {
-				if p.cmd.ProcessState != nil {
-					_ = execPlugin(config.LogFunc, config.Map, p.Path, args...)
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+			config.Map.Range(func(key, value any) bool {
+				p, ok := value.(*PluginRunning)
+				if ok {
+					if p.cmd.ProcessState != nil {
+						_ = execPlugin(ctx, config.LogFunc, config.Map, p.Path, args...)
+					}
 				}
-			}
 
-			return true
-		})
-		time.Sleep(time.Second)
+				return true
+			})
+			time.Sleep(time.Second)
+		}
 	}
+}
+
+func PluginRunner(config *PluginMap, base_location, extension string, args ...string) error {
+	ctx := context.Background()
+	if err := pluginRoutine(ctx, config, base_location, extension, args...); err != nil {
+		return err
+	}
+	return nil
+}
+
+func PluginRunnerWithContext(ctx context.Context, config *PluginMap, base_location, extension string, args ...string) error {
+	if err := pluginRoutine(ctx, config, base_location, extension, args...); err != nil {
+		return err
+	}
+	return nil
 }
