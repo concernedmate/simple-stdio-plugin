@@ -72,9 +72,14 @@ type CommandComm struct {
 	err []byte
 }
 
-func (plugin *PluginRunning) Command(command []byte) ([]byte, error) {
+func (plugin *PluginRunning) Command(input MessageInput) ([]byte, error) {
 	if plugin.cmd.ProcessState != nil {
 		return nil, errors.New("process is already exited")
+	}
+
+	bytes, err := EncodeMessage(input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode MessageInput: %s", err.Error())
 	}
 
 	id := uuid.New().String()
@@ -93,7 +98,7 @@ func (plugin *PluginRunning) Command(command []byte) ([]byte, error) {
 	channels := plugin.cmd_map[id]
 	plugin.cmd_mutex.RUnlock()
 
-	plugin.write_chan <- PluginComm{id: []byte(id), data: command}
+	plugin.write_chan <- PluginComm{id: []byte(id), data: bytes}
 
 	result := <-channels
 	if result.err != nil {

@@ -1,7 +1,9 @@
 package simplestdioplugin
 
 import (
+	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -24,10 +26,13 @@ type ReadResult struct {
 }
 
 const PROTOCOL_VERSION uint8 = 5
+const CHUNK_SIZE = 3072
 
 // 05 01 0000 id ... 0xAD
 // version-command-length-id-data-ending
-func EncodeCommand(uuid []byte, command_type EncodedCommandType, data []byte) ([]byte, error) {
+//
+// encodeCommandProtocol is for communication between host application and client plugin
+func encodeCommandProtocol(uuid []byte, command_type EncodedCommandType, data []byte) ([]byte, error) {
 	if len(uuid) != 36 {
 		return nil, fmt.Errorf("invalid uuid length")
 	}
@@ -53,6 +58,7 @@ func EncodeCommand(uuid []byte, command_type EncodedCommandType, data []byte) ([
 	return result, nil
 }
 
+// WriteAll sends whole data using provided uuid as key for chunking data
 func WriteAll(uuid []byte, data []byte, pipe *os.File) error {
 	counter := 0
 	for {
@@ -68,7 +74,7 @@ func WriteAll(uuid []byte, data []byte, pipe *os.File) error {
 		}
 		counter += CHUNK_SIZE
 
-		total, err := EncodeCommand(uuid, COMMAND_DATA, chunk)
+		total, err := encodeCommandProtocol(uuid, COMMAND_DATA, chunk)
 		if err != nil {
 			return err
 		}
@@ -78,7 +84,7 @@ func WriteAll(uuid []byte, data []byte, pipe *os.File) error {
 		}
 	}
 
-	eof, err := EncodeCommand(uuid, COMMAND_FINAL, []byte{})
+	eof, err := encodeCommandProtocol(uuid, COMMAND_FINAL, []byte{})
 	if err != nil {
 		return err
 	}
@@ -90,8 +96,11 @@ func WriteAll(uuid []byte, data []byte, pipe *os.File) error {
 	return nil
 }
 
+// ReadAll reads whole data from pipe until EOF this errors if while reading
+// there is difference in UUID between chunks
 func ReadAll(pipe *os.File) (ReadResult, error) {
 	var data []byte
+	var uuid []byte
 	for {
 		read, err := ReadChunk(pipe)
 		if err != nil {
@@ -102,6 +111,13 @@ func ReadAll(pipe *os.File) (ReadResult, error) {
 		case COMMAND_ERROR:
 			return ReadResult{uuid: read.uuid, data: data, command: read.command}, nil
 		case COMMAND_DATA:
+			if uuid == nil {
+				uuid = read.uuid
+			} else {
+				if string(uuid) != string(read.uuid) {
+					return ReadResult{}, errors.New("difference in uuid between chunk")
+				}
+			}
 			data = append(data, read.data[:len(read.data)-1]...)
 		case COMMAND_FINAL:
 			return ReadResult{uuid: read.uuid, data: data, command: read.command}, nil
@@ -111,6 +127,7 @@ func ReadAll(pipe *os.File) (ReadResult, error) {
 	}
 }
 
+// ReadChunk reads single chunk
 func ReadChunk(pipe *os.File) (ReadResult, error) {
 	header := make([]byte, 6)
 	n, err := pipe.Read(header)
@@ -149,4 +166,33 @@ func ReadChunk(pipe *os.File) (ReadResult, error) {
 	resp := response[37:] // +1 separator
 
 	return ReadResult{uuid: id, data: resp, command: EncodedCommandType(command)}, nil
+}
+
+// MessageInput is used to route function and provided data
+type MessageInput struct {
+	Function string
+	Data     []byte
+}
+
+func EncodeMessage(data MessageInput) ([]byte, error) {
+	result := map[string]any{
+		"Function": data.Function,
+		"Data":     base64.StdEncoding.EncodeToString(data.Data),
+	}
+
+	return json.Marshal(result)
+}
+func DecodeMessage(data []byte) (MessageInput, error) {
+	var input map[string]string
+
+	if err := json.Unmarshal(data, &input); err != nil {
+		return MessageInput{}, err
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(input["Data"])
+	if err != nil {
+		return MessageInput{}, err
+	}
+
+	return MessageInput{Function: input["Function"], Data: decoded}, nil
 }

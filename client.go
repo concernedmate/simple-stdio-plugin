@@ -1,16 +1,12 @@
 package simplestdioplugin
 
 import (
-	"encoding/json"
 	"os"
-	"strings"
 	"sync"
 )
 
-const CHUNK_SIZE = 3072
-
 type PluginData struct {
-	Router map[string]func(json []byte) ([]byte, error)
+	Router map[string]func(data []byte) ([]byte, error)
 
 	Stdin  *os.File
 	Stdout *os.File
@@ -32,22 +28,6 @@ func (plugin *PluginData) writeError(id []byte, data string) error {
 	return WriteAll(id, []byte(data), plugin.Stdout)
 }
 
-func parseClientMessage(msg string) (sub string, jsondata []byte) {
-	if strings.Contains(msg, "?json=") {
-		split := strings.Split(msg, "?json=")
-
-		sub = split[0]
-		jsondata = []byte(strings.Join(split[1:], "?json="))
-		if json.Valid(jsondata) {
-			return sub, jsondata
-		}
-
-		return sub, nil
-	}
-
-	return msg, nil
-}
-
 func NewPluginClient(Router map[string]func(json []byte) ([]byte, error), Stdin *os.File, Stdout *os.File) PluginData {
 	return PluginData{Router: Router, Stdin: Stdin, Stdout: Stdout}
 }
@@ -64,19 +44,23 @@ func PluginServe(plugin PluginData, max_conn ...int) error {
 	for {
 		id, data, err := plugin.readInput()
 		if err != nil {
-			_ = plugin.writeError(id, "error: "+err.Error())
+			_ = plugin.writeError(id, "readInput error: "+err.Error())
 			continue
 		}
 
 		mut.RLock()
 		if concurrent >= max_concurrent {
-			_ = plugin.writeError(id, "error: MAX CONCURRENT command reached")
+			_ = plugin.writeError(id, "concurrent error: MAX CONCURRENT command reached")
 			mut.RUnlock()
 			continue
 		}
 		mut.RUnlock()
 
-		sub, json := parseClientMessage(string(data))
+		input, err := DecodeMessage(data)
+		if err != nil {
+			_ = plugin.writeError(id, "decode message error: "+err.Error())
+			continue
+		}
 
 		mut.Lock()
 		concurrent += 1
@@ -88,9 +72,9 @@ func PluginServe(plugin PluginData, max_conn ...int) error {
 				mut.Unlock()
 			}()
 
-			function := plugin.Router[sub]
+			function := plugin.Router[input.Function]
 			if function != nil {
-				result, err := function(json)
+				result, err := function(input.Data)
 				if err != nil {
 					_ = plugin.writeError(id, "error func: "+err.Error())
 				} else {
@@ -99,7 +83,7 @@ func PluginServe(plugin PluginData, max_conn ...int) error {
 					}
 				}
 			} else {
-				_ = plugin.writeError(id, "error sub: "+sub+" not found")
+				_ = plugin.writeError(id, "error func: "+input.Function+" not found")
 			}
 		}()
 	}

@@ -43,8 +43,7 @@ func TestLongInput(t *testing.T) {
 		t.Errorf("shouldnt be error, err: %s", err.Error())
 	}
 
-	command := "command?json=" + string(input)
-	result, err := plugin.Command([]byte(command))
+	result, err := plugin.Command(simplestdioplugin.MessageInput{Function: "command", Data: input})
 	if err != nil {
 		t.Errorf("shouldnt be error, err: %s", err.Error())
 	}
