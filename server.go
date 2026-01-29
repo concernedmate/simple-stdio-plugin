@@ -10,9 +10,9 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
-	childmanager "github.com/concernedmate/simple-stdio-plugin/child_manager"
 	"github.com/google/uuid"
 )
 
@@ -225,7 +225,10 @@ func execPlugin(ctx context.Context, logger func(string), syncMap *sync.Map, loc
 	name := path.Base(location)
 
 	cmd := exec.CommandContext(ctx, location, args...)
-	childmanager.ConfigureCommand(cmd)
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Pdeathsig = syscall.SIGTERM
 
 	pr1, pw1, err := os.Pipe()
 	if err != nil {
@@ -245,11 +248,6 @@ func execPlugin(ctx context.Context, logger func(string), syncMap *sync.Map, loc
 	cmd.Stderr = pw3
 
 	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	if err := childmanager.AddChildProcess(cmd.Process); err != nil {
-		cmd.Process.Kill()
 		return err
 	}
 
@@ -306,9 +304,6 @@ func NewPluginMap(log_func ...func(string)) PluginMap {
 }
 
 func pluginRoutine(ctx context.Context, config *PluginMap, base_location, extension string, args ...string) error {
-	if err := childmanager.InitializeChildProcessManager(); err != nil {
-		return err
-	}
 
 	if config.LogFunc == nil {
 		config.LogFunc = func(message string) {}
@@ -329,7 +324,6 @@ func pluginRoutine(ctx context.Context, config *PluginMap, base_location, extens
 		for {
 			select {
 			case <-ctx.Done():
-				childmanager.DisposeChildProcessManager()
 				return
 			default:
 				config.Map.Range(func(key, value any) bool {
