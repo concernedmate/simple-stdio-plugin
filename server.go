@@ -10,7 +10,6 @@ import (
 	"path"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -225,11 +224,6 @@ func execPlugin(ctx context.Context, logger func(string), syncMap *sync.Map, loc
 	name := path.Base(location)
 
 	cmd := exec.CommandContext(ctx, location, args...)
-	if cmd.SysProcAttr == nil {
-		cmd.SysProcAttr = &syscall.SysProcAttr{}
-	}
-	cmd.SysProcAttr.Pdeathsig = syscall.SIGTERM
-
 	pr1, pw1, err := os.Pipe()
 	if err != nil {
 		return err
