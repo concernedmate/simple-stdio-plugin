@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	childmanager "github.com/concernedmate/simple-stdio-plugin/child_manager"
 	"github.com/google/uuid"
 )
 
@@ -47,9 +48,10 @@ func (mapped *PluginMap) GetPluginByName(plugin_name string) (*PluginRunning, er
 }
 
 type PluginRunning struct {
-	Name    string
-	Path    string
-	LogFunc func(message string)
+	Name     string
+	Path     string
+	LogFunc  func(message string)
+	KillFunc func() error
 
 	write_chan chan PluginComm
 	resp_chan  chan PluginComm
@@ -60,6 +62,7 @@ type PluginRunning struct {
 	cmd      *exec.Cmd
 	pipe_in  *os.File
 	pipe_out *os.File
+	pipe_err *os.File
 }
 
 type PluginComm struct {
@@ -77,7 +80,7 @@ func (plugin *PluginRunning) Command(input MessageInput) ([]byte, error) {
 		return nil, errors.New("process is already exited")
 	}
 
-	bytes, err := EncodeMessage(input)
+	bytes, err := encodeMessage(input)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode MessageInput: %s", err.Error())
 	}
@@ -119,7 +122,7 @@ func (plugin *PluginRunning) runner(ctx context.Context) error {
 			}
 			plugin.cmd_mutex.RUnlock()
 
-			if err := WriteAll(comm.id, comm.data, plugin.pipe_in); err != nil {
+			if err := writeAll(comm.id, comm.data, plugin.pipe_in); err != nil {
 				return err
 			}
 		case comm := <-plugin.resp_chan:
@@ -144,7 +147,7 @@ func (plugin *PluginRunning) reader(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		default:
-			read, err := ReadChunk(plugin.pipe_out)
+			read, err := readChunk(plugin.pipe_out)
 			if err != nil {
 				return err
 			}
@@ -177,6 +180,31 @@ func (plugin *PluginRunning) reader(ctx context.Context) error {
 	}
 }
 
+func (plugin *PluginRunning) stderr(ctx context.Context) error {
+	buffer := make([]byte, 10)
+
+	result := []byte{}
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+			n, err := plugin.pipe_err.Read(buffer)
+			if err != nil {
+				if err == io.EOF {
+					return fmt.Errorf("plugin %s stderr: \n%s", plugin.Name, string(result))
+				}
+				return fmt.Errorf("plugin %s failed to read stderr: %s", plugin.Name, err.Error())
+			}
+
+			result = append(result, buffer[0:n]...)
+			if n < 10 {
+				return fmt.Errorf("plugin %s stderr: \n%s", plugin.Name, string(result))
+			}
+		}
+	}
+}
+
 func findPluginPath(base_location string, extension string) ([]string, error) {
 	dirs, err := os.ReadDir(base_location)
 	if err != nil {
@@ -197,17 +225,16 @@ func execPlugin(ctx context.Context, logger func(string), syncMap *sync.Map, loc
 	name := path.Base(location)
 
 	cmd := exec.CommandContext(ctx, location, args...)
+	childmanager.ConfigureCommand(cmd)
 
 	pr1, pw1, err := os.Pipe()
 	if err != nil {
 		return err
 	}
-
 	pr2, pw2, err := os.Pipe()
 	if err != nil {
 		return err
 	}
-
 	pr3, pw3, err := os.Pipe()
 	if err != nil {
 		return err
@@ -221,11 +248,16 @@ func execPlugin(ctx context.Context, logger func(string), syncMap *sync.Map, loc
 		return err
 	}
 
+	if err := childmanager.AddChildProcess(cmd.Process); err != nil {
+		cmd.Process.Kill()
+		return err
+	}
+
 	plugin_running := &PluginRunning{
 		Name: name, Path: location, cmd: cmd, LogFunc: logger,
 		cmd_mutex: sync.RWMutex{}, cmd_map: make(map[string]chan CommandComm),
 		write_chan: make(chan PluginComm), resp_chan: make(chan PluginComm),
-		pipe_in: pw1, pipe_out: pr2,
+		pipe_in: pw1, pipe_out: pr2, pipe_err: pr3,
 	}
 	logger(fmt.Sprintf("started plugin %s (%s) pid: %d", name, location, cmd.Process.Pid))
 
@@ -234,40 +266,16 @@ func execPlugin(ctx context.Context, logger func(string), syncMap *sync.Map, loc
 			logger(fmt.Sprintf("plugin runner %s exited: %s", name, err.Error()))
 		}
 	}()
-
 	go func() {
 		if err := plugin_running.reader(ctx); err != nil {
 			logger(fmt.Sprintf("plugin reader %s exited: %s", name, err.Error()))
 		}
 	}()
-
 	go func() {
-		buffer := make([]byte, 10)
-
-		result := []byte{}
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				n, err := pr3.Read(buffer)
-				if err != nil {
-					if err == io.EOF {
-						logger(fmt.Sprintf("plugin %s stderr: \n%s", name, string(result)))
-						return
-					}
-					logger(fmt.Sprintf("plugin %s failed to read stderr: %s", name, err.Error()))
-				}
-
-				result = append(result, buffer[0:n]...)
-				if n < 10 {
-					logger(fmt.Sprintf("plugin %s stderr: \n%s", name, string(result)))
-					return
-				}
-			}
+		if err := plugin_running.stderr(ctx); err != nil {
+			logger(err.Error())
 		}
 	}()
-
 	go func() {
 		if err := cmd.Wait(); err != nil {
 			logger(fmt.Sprintf("plugin %s exited: %s", name, err.Error()))
@@ -298,6 +306,10 @@ func NewPluginMap(log_func ...func(string)) PluginMap {
 }
 
 func pluginRoutine(ctx context.Context, config *PluginMap, base_location, extension string, args ...string) error {
+	if err := childmanager.InitializeChildProcessManager(); err != nil {
+		return err
+	}
+
 	if config.LogFunc == nil {
 		config.LogFunc = func(message string) {}
 	}
@@ -313,37 +325,48 @@ func pluginRoutine(ctx context.Context, config *PluginMap, base_location, extens
 		}
 	}
 
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
-			config.Map.Range(func(key, value any) bool {
-				p, ok := value.(*PluginRunning)
-				if ok {
-					if p.cmd.ProcessState != nil {
-						_ = execPlugin(ctx, config.LogFunc, config.Map, p.Path, args...)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				childmanager.DisposeChildProcessManager()
+				return
+			default:
+				config.Map.Range(func(key, value any) bool {
+					p, ok := value.(*PluginRunning)
+					if ok {
+						if p.cmd.ProcessState != nil {
+							_ = execPlugin(ctx, config.LogFunc, config.Map, p.Path, args...)
+						}
 					}
-				}
 
-				return true
-			})
-			time.Sleep(time.Second)
+					return true
+				})
+				time.Sleep(time.Second)
+			}
 		}
-	}
-}
+	}()
 
-func PluginRunner(config *PluginMap, base_location, extension string, args ...string) error {
-	ctx := context.Background()
-	if err := pluginRoutine(ctx, config, base_location, extension, args...); err != nil {
-		return err
-	}
 	return nil
 }
 
-func PluginRunnerWithContext(ctx context.Context, config *PluginMap, base_location, extension string, args ...string) error {
-	if err := pluginRoutine(ctx, config, base_location, extension, args...); err != nil {
-		return err
+type StartPluginConfig struct {
+	Ctx       context.Context
+	BaseDir   string
+	Extension string
+
+	LogFunc func(string)
+}
+
+func StartPlugin(config StartPluginConfig, args ...string) (*PluginMap, error) {
+	if config.Ctx == nil {
+		return nil, errors.New("invalid context")
 	}
-	return nil
+	mapped := NewPluginMap(config.LogFunc)
+	ptr := &mapped
+
+	if err := pluginRoutine(config.Ctx, ptr, config.BaseDir, config.Extension, args...); err != nil {
+		return nil, err
+	}
+	return ptr, nil
 }

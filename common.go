@@ -59,7 +59,7 @@ func encodeCommandProtocol(uuid []byte, command_type EncodedCommandType, data []
 }
 
 // WriteAll sends whole data using provided uuid as key for chunking data
-func WriteAll(uuid []byte, data []byte, pipe *os.File) error {
+func writeAll(uuid []byte, data []byte, pipe *os.File) error {
 	counter := 0
 	for {
 		if counter >= len(data) {
@@ -98,11 +98,11 @@ func WriteAll(uuid []byte, data []byte, pipe *os.File) error {
 
 // ReadAll reads whole data from pipe until EOF this errors if while reading
 // there is difference in UUID between chunks
-func ReadAll(pipe *os.File) (ReadResult, error) {
+func readAll(pipe *os.File) (ReadResult, error) {
 	var data []byte
 	var uuid []byte
 	for {
-		read, err := ReadChunk(pipe)
+		read, err := readChunk(pipe)
 		if err != nil {
 			return ReadResult{}, err
 		}
@@ -128,7 +128,7 @@ func ReadAll(pipe *os.File) (ReadResult, error) {
 }
 
 // ReadChunk reads single chunk
-func ReadChunk(pipe *os.File) (ReadResult, error) {
+func readChunk(pipe *os.File) (ReadResult, error) {
 	header := make([]byte, 6)
 	n, err := pipe.Read(header)
 	if err != nil {
@@ -174,7 +174,7 @@ type MessageInput struct {
 	Data     []byte
 }
 
-func EncodeMessage(data MessageInput) ([]byte, error) {
+func encodeMessage(data MessageInput) ([]byte, error) {
 	result := map[string]any{
 		"Function": data.Function,
 		"Data":     base64.StdEncoding.EncodeToString(data.Data),
@@ -182,7 +182,7 @@ func EncodeMessage(data MessageInput) ([]byte, error) {
 
 	return json.Marshal(result)
 }
-func DecodeMessage(data []byte) (MessageInput, error) {
+func decodeMessage(data []byte) (MessageInput, error) {
 	var input map[string]string
 
 	if err := json.Unmarshal(data, &input); err != nil {

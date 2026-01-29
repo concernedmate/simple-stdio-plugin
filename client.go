@@ -13,7 +13,7 @@ type PluginData struct {
 }
 
 func (plugin *PluginData) readInput() (id []byte, data []byte, err error) {
-	result, err := ReadAll(plugin.Stdin)
+	result, err := readAll(plugin.Stdin)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -21,11 +21,11 @@ func (plugin *PluginData) readInput() (id []byte, data []byte, err error) {
 }
 
 func (plugin *PluginData) writeOutput(id []byte, data []byte) error {
-	return WriteAll(id, data, plugin.Stdout)
+	return writeAll(id, data, plugin.Stdout)
 }
 
 func (plugin *PluginData) writeError(id []byte, data string) error {
-	return WriteAll(id, []byte(data), plugin.Stdout)
+	return writeAll(id, []byte(data), plugin.Stdout)
 }
 
 func NewPluginClient(Router map[string]func(json []byte) ([]byte, error), Stdin *os.File, Stdout *os.File) PluginData {
@@ -56,7 +56,7 @@ func PluginServe(plugin PluginData, max_conn ...int) error {
 		}
 		mut.RUnlock()
 
-		input, err := DecodeMessage(data)
+		input, err := decodeMessage(data)
 		if err != nil {
 			_ = plugin.writeError(id, "decode message error: "+err.Error())
 			continue
