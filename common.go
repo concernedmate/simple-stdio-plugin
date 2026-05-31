@@ -1,9 +1,9 @@
 package simplestdioplugin
 
 import (
-	"encoding/base64"
+	"bytes"
 	"encoding/binary"
-	"encoding/json"
+	"encoding/gob"
 	"errors"
 	"fmt"
 	"math"
@@ -175,24 +175,21 @@ type MessageInput struct {
 }
 
 func encodeMessage(data MessageInput) ([]byte, error) {
-	result := map[string]any{
-		"Function": data.Function,
-		"Data":     base64.StdEncoding.EncodeToString(data.Data),
+	var buf bytes.Buffer
+	enc := gob.NewEncoder(&buf)
+	if err := enc.Encode(data); err != nil {
+		return nil, err
 	}
 
-	return json.Marshal(result)
+	return buf.Bytes(), nil
 }
 func decodeMessage(data []byte) (MessageInput, error) {
-	var input map[string]string
+	var input MessageInput
 
-	if err := json.Unmarshal(data, &input); err != nil {
+	dec := gob.NewDecoder(bytes.NewBuffer(data))
+	if err := dec.Decode(&input); err != nil {
 		return MessageInput{}, err
 	}
 
-	decoded, err := base64.StdEncoding.DecodeString(input["Data"])
-	if err != nil {
-		return MessageInput{}, err
-	}
-
-	return MessageInput{Function: input["Function"], Data: decoded}, nil
+	return input, nil
 }
