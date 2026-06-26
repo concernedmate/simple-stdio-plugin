@@ -37,10 +37,18 @@ func execPlugin(ctx context.Context, logger func(string), syncMap *sync.Map, loc
 	}
 
 	plugin_running := &PluginRunning{
-		Name: name, Path: location, cmd: cmd, LogFunc: logger,
-		cmd_mutex: sync.RWMutex{}, cmd_map: make(map[string]chan CommandComm),
-		write_chan: make(chan PluginComm), resp_chan: make(chan PluginComm),
-		pipe_in: pw1, pipe_out: pr2, pipe_err: pr3,
+		Name:           name,
+		Path:           location,
+		cmd:            cmd,
+		LogFunc:        logger,
+		cmd_mutex:      sync.RWMutex{},
+		cmd_map:        make(map[string]chan CommandComm),
+		write_chan:     make(chan PluginComm),
+		resp_chan:      make(chan PluginComm),
+		heartbeat_chan: make(chan struct{}),
+		pipe_in:        pw1,
+		pipe_out:       pr2,
+		pipe_err:       pr3,
 	}
 	logger(fmt.Sprintf("started plugin %s (%s) pid: %d", name, location, cmd.Process.Pid))
 
@@ -71,8 +79,12 @@ func execPlugin(ctx context.Context, logger func(string), syncMap *sync.Map, loc
 		pr2.Close()
 		pw2.Close()
 
+		pr3.Close()
+		pw3.Close()
+
 		close(plugin_running.resp_chan)
 		close(plugin_running.write_chan)
+		close(plugin_running.heartbeat_chan)
 	}()
 
 	syncMap.Store(name, plugin_running)

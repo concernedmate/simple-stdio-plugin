@@ -14,9 +14,10 @@ import (
 type EncodedCommandType uint8
 
 const (
-	COMMAND_DATA  EncodedCommandType = 1
-	COMMAND_ERROR EncodedCommandType = 2
-	COMMAND_FINAL EncodedCommandType = 3
+	COMMAND_DATA      EncodedCommandType = 1
+	COMMAND_ERROR     EncodedCommandType = 2
+	COMMAND_FINAL     EncodedCommandType = 3
+	COMMAND_HEARTBEAT EncodedCommandType = 4
 )
 
 type ReadResult struct {
@@ -96,37 +97,6 @@ func writeAll(uuid []byte, data []byte, pipe *os.File) error {
 	return nil
 }
 
-// ReadAll reads whole data from pipe until EOF this errors if while reading
-// there is difference in UUID between chunks
-func readAll(pipe *os.File) (ReadResult, error) {
-	var data []byte
-	var uuid []byte
-	for {
-		read, err := readChunk(pipe)
-		if err != nil {
-			return ReadResult{}, err
-		}
-
-		switch read.command {
-		case COMMAND_ERROR:
-			return ReadResult{uuid: read.uuid, data: data, command: read.command}, nil
-		case COMMAND_DATA:
-			if uuid == nil {
-				uuid = read.uuid
-			} else {
-				if string(uuid) != string(read.uuid) {
-					return ReadResult{}, errors.New("difference in uuid between chunk")
-				}
-			}
-			data = append(data, read.data[:len(read.data)-1]...)
-		case COMMAND_FINAL:
-			return ReadResult{uuid: read.uuid, data: data, command: read.command}, nil
-		default:
-			return ReadResult{}, errors.New("invalid command")
-		}
-	}
-}
-
 // ReadChunk reads single chunk
 func readChunk(pipe *os.File) (ReadResult, error) {
 	header := make([]byte, 6)
@@ -143,7 +113,8 @@ func readChunk(pipe *os.File) (ReadResult, error) {
 	if version != PROTOCOL_VERSION {
 		return ReadResult{}, errors.New("invalid protocol version")
 	}
-	if command != byte(COMMAND_DATA) && command != byte(COMMAND_ERROR) && command != byte(COMMAND_FINAL) {
+	if command != byte(COMMAND_DATA) && command != byte(COMMAND_ERROR) &&
+		command != byte(COMMAND_FINAL) && command != byte(COMMAND_HEARTBEAT) {
 		return ReadResult{}, errors.New("invalid protocol command")
 	}
 
@@ -166,6 +137,19 @@ func readChunk(pipe *os.File) (ReadResult, error) {
 	resp := response[37:] // +1 separator
 
 	return ReadResult{uuid: id, data: resp, command: EncodedCommandType(command)}, nil
+}
+
+func writeHeartbeat(uuid []byte, pipe *os.File) error {
+	eof, err := encodeCommandProtocol(uuid, COMMAND_HEARTBEAT, []byte{})
+	if err != nil {
+		return err
+	}
+	_, err = pipe.Write(eof)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // MessageInput is used to route function and provided data

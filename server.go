@@ -47,13 +47,13 @@ func (mapped *PluginMap) GetPluginByName(plugin_name string) (*PluginRunning, er
 }
 
 type PluginRunning struct {
-	Name     string
-	Path     string
-	LogFunc  func(message string)
-	KillFunc func() error
+	Name    string
+	Path    string
+	LogFunc func(message string)
 
-	write_chan chan PluginComm
-	resp_chan  chan PluginComm
+	write_chan     chan PluginComm
+	resp_chan      chan PluginComm
+	heartbeat_chan chan struct{}
 
 	cmd_mutex sync.RWMutex
 	cmd_map   map[string]chan CommandComm
@@ -134,6 +134,10 @@ func (plugin *PluginRunning) runner(ctx context.Context) error {
 			plugin.cmd_mutex.Lock()
 			plugin.cmd_map[string(comm.id)] <- CommandComm{out: comm.data, err: nil}
 			plugin.cmd_mutex.Unlock()
+		case <-plugin.heartbeat_chan:
+			if err := writeHeartbeat([]byte(uuid.New().String()), plugin.pipe_in); err != nil {
+				return err
+			}
 		}
 	}
 }
@@ -257,12 +261,15 @@ func pluginRoutine(ctx context.Context, config *PluginMap, base_location, extens
 					if ok {
 						if p.cmd.ProcessState != nil {
 							_ = execPlugin(ctx, config.LogFunc, config.Map, p.Path, args...)
+						} else {
+							p.heartbeat_chan <- struct{}{}
 						}
 					}
 
 					return true
 				})
-				time.Sleep(time.Second)
+
+				time.Sleep(3 * time.Second)
 			}
 		}
 	}()

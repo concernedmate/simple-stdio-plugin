@@ -24,7 +24,7 @@ func TestLongInput(t *testing.T) {
 		t.Log(err.Error())
 	}
 
-	for range 10 {
+	for range 1000 {
 		lorem, err := os.ReadFile("./test_cases/lorem.txt")
 		if err != nil {
 			t.Errorf("shouldnt be error, err: %s", err.Error())
