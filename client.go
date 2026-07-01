@@ -14,50 +14,95 @@ import (
 type PluginData struct {
 	Router map[string]func(data []byte) ([]byte, error)
 
-	resp_chan      chan ReadResult
-	error_chan     chan ReadResult
-	heartbeat_chan chan struct{}
+	resp_mutex  sync.RWMutex
+	resp_map    map[string]chan ReadResult
+	req_c       chan ReadResult
+	heartbeat_c chan struct{}
 
-	Stdin  *os.File
-	Stdout *os.File
+	stdin  *os.File
+	stdout *os.File
+}
+
+func (plugin *PluginData) Command(input MessageInput, timeout ...time.Duration) ([]byte, error) {
+	bytes, err := encodeMessage(input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode MessageInput: %v", err)
+	}
+
+	id := uuid.New().String()
+	resp_c := make(chan ReadResult)
+
+	plugin.resp_mutex.Lock()
+	plugin.resp_map[id] = resp_c
+	plugin.resp_mutex.Unlock()
+	defer func() {
+		plugin.resp_mutex.Lock()
+		defer plugin.resp_mutex.Unlock()
+
+		close(plugin.resp_map[id])
+		delete(plugin.resp_map, id)
+	}()
+
+	if err := writeAll([]byte(id), bytes, COMMAND_REQUEST, plugin.stdout); err != nil {
+		return nil, fmt.Errorf("failed to write request: %v", err)
+	}
+
+	if len(timeout) > 0 {
+		timer := time.NewTimer(timeout[0])
+		defer timer.Stop()
+
+		select {
+		case <-timer.C:
+			return nil, fmt.Errorf("command timed out")
+		case result := <-resp_c:
+			if result.command == COMMAND_ERROR {
+				return nil, fmt.Errorf("%s", string(result.data))
+			}
+			return result.data, nil
+		}
+	} else {
+		result := <-resp_c
+		if result.command == COMMAND_ERROR {
+			return nil, fmt.Errorf("%s", string(result.data))
+		}
+		return result.data, nil
+	}
 }
 
 func (plugin *PluginData) reader(ctx context.Context) error {
 	result := make(map[string][]byte)
-	result_mutex := sync.Mutex{}
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		default:
-			read, err := readChunk(plugin.Stdin)
+			read, err := readChunk(plugin.stdin)
 			if err != nil {
 				return err
 			}
 
 			switch read.command {
 			case COMMAND_DATA:
-				result_mutex.Lock()
-				result[string(read.uuid)] = append(result[string(read.uuid)], read.data[:len(read.data)-1]...)
-				result_mutex.Unlock()
+				result[string(read.uuid)] = append(result[string(read.uuid)], read.data...)
+			case COMMAND_REQUEST:
+				plugin.req_c <- ReadResult{uuid: read.uuid, command: read.command, data: result[string(read.uuid)]}
+				delete(result, string(read.uuid))
 			case COMMAND_ERROR:
-				result_mutex.Lock()
-				final := ReadResult{uuid: read.uuid, data: read.data[:len(read.data)-1], command: read.command}
-				// reset after
-				delete(result, string(read.uuid))
-				result_mutex.Unlock()
+				plugin.resp_mutex.RLock()
+				resp_c := plugin.resp_map[string(read.uuid)]
+				plugin.resp_mutex.RUnlock()
 
-				plugin.error_chan <- final
-			case COMMAND_FINAL:
-				result_mutex.Lock()
-				final := ReadResult{uuid: read.uuid, data: result[string(read.uuid)], command: read.command}
-				// reset after
+				resp_c <- ReadResult{uuid: read.uuid, command: read.command, data: result[string(read.uuid)]}
 				delete(result, string(read.uuid))
-				result_mutex.Unlock()
+			case COMMAND_RESULT:
+				plugin.resp_mutex.RLock()
+				resp_c := plugin.resp_map[string(read.uuid)]
+				plugin.resp_mutex.RUnlock()
 
-				plugin.resp_chan <- final
+				resp_c <- ReadResult{uuid: read.uuid, command: read.command, data: result[string(read.uuid)]}
+				delete(result, string(read.uuid))
 			case COMMAND_HEARTBEAT:
-				plugin.heartbeat_chan <- struct{}{}
+				plugin.heartbeat_c <- struct{}{}
 			default:
 				return errors.New("invalid command")
 			}
@@ -65,26 +110,21 @@ func (plugin *PluginData) reader(ctx context.Context) error {
 	}
 }
 
-func (plugin *PluginData) writeOutput(id []byte, data []byte) error {
-	return writeAll(id, data, plugin.Stdout)
-}
+func NewPluginClient(Router map[string]func(json []byte) ([]byte, error), stdin *os.File, stdout *os.File) *PluginData {
+	return &PluginData{
+		Router: Router,
 
-func (plugin *PluginData) writeError(id []byte, data string) error {
-	return writeAll(id, []byte(data), plugin.Stdout)
-}
+		resp_mutex:  sync.RWMutex{},
+		resp_map:    make(map[string]chan ReadResult),
+		req_c:       make(chan ReadResult),
+		heartbeat_c: make(chan struct{}),
 
-func NewPluginClient(Router map[string]func(json []byte) ([]byte, error), Stdin *os.File, Stdout *os.File) PluginData {
-	return PluginData{
-		Router:         Router,
-		Stdin:          Stdin,
-		Stdout:         Stdout,
-		resp_chan:      make(chan ReadResult),
-		error_chan:     make(chan ReadResult),
-		heartbeat_chan: make(chan struct{}),
+		stdin:  stdin,
+		stdout: stdout,
 	}
 }
 
-func PluginServe(plugin PluginData, max_conn ...int) error {
+func PluginServe(plugin *PluginData, max_conn ...int) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -99,7 +139,7 @@ func PluginServe(plugin PluginData, max_conn ...int) error {
 	// reader
 	go func() {
 		if err := plugin.reader(ctx); err != nil {
-			_ = plugin.writeError([]byte(uuid.New().String()), "reader error: "+err.Error())
+			_ = writeAll([]byte(uuid.New().String()), []byte("reader error: "+err.Error()), COMMAND_ERROR, plugin.stdout)
 		}
 		cancel()
 	}()
@@ -112,14 +152,12 @@ func PluginServe(plugin PluginData, max_conn ...int) error {
 		case <-timer.C:
 			cancel()
 			return fmt.Errorf("plugin closed (heartbeat timeout)")
-		case <-plugin.heartbeat_chan:
+		case <-plugin.heartbeat_c:
 			timer.Reset(5 * time.Second)
-		case data := <-plugin.error_chan:
-			_ = plugin.writeError(data.uuid, string(data.data))
-		case data := <-plugin.resp_chan:
+		case data := <-plugin.req_c:
 			mut.RLock()
 			if concurrent >= max_concurrent {
-				_ = plugin.writeError(data.uuid, "concurrent error: MAX CONCURRENT command reached")
+				_ = writeAll(data.uuid, []byte("error concurrent: MAX CONCURRENT command reached"), COMMAND_ERROR, plugin.stdout)
 				mut.RUnlock()
 				continue
 			}
@@ -127,7 +165,7 @@ func PluginServe(plugin PluginData, max_conn ...int) error {
 
 			input, err := decodeMessage(data.data)
 			if err != nil {
-				_ = plugin.writeError(data.uuid, fmt.Sprintf("decode message error: %v", err))
+				_ = writeAll(data.uuid, []byte(fmt.Sprintf("error decode message: %v", err)), COMMAND_ERROR, plugin.stdout)
 				continue
 			}
 
@@ -141,21 +179,19 @@ func PluginServe(plugin PluginData, max_conn ...int) error {
 					mut.Unlock()
 				}()
 
-				function := plugin.Router[input.Function]
-				if function != nil {
+				if function := plugin.Router[input.Function]; function != nil {
 					result, err := function(input.Data)
 					if err != nil {
-						_ = plugin.writeError(data.uuid, "error func: "+err.Error())
+						_ = writeAll(data.uuid, []byte("error func: "+err.Error()), COMMAND_ERROR, plugin.stdout)
 					} else {
-						if err := plugin.writeOutput(data.uuid, result); err != nil {
-							_ = plugin.writeError(data.uuid, "error write: "+err.Error())
+						if err := writeAll(data.uuid, result, COMMAND_RESULT, plugin.stdout); err != nil {
+							_ = writeAll(data.uuid, []byte("error write: "+err.Error()), COMMAND_ERROR, plugin.stdout)
 						}
 					}
 				} else {
-					_ = plugin.writeError(data.uuid, "error func: "+input.Function+" not found")
+					_ = writeAll(data.uuid, []byte("error func: "+input.Function+" not found"), COMMAND_ERROR, plugin.stdout)
 				}
 			}()
-
 		}
 	}
 }

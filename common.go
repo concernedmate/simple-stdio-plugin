@@ -6,9 +6,10 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"slices"
+
+	"github.com/google/uuid"
 )
 
 type EncodedCommandType uint8
@@ -16,8 +17,9 @@ type EncodedCommandType uint8
 const (
 	COMMAND_DATA      EncodedCommandType = 1
 	COMMAND_ERROR     EncodedCommandType = 2
-	COMMAND_FINAL     EncodedCommandType = 3
+	COMMAND_RESULT    EncodedCommandType = 3
 	COMMAND_HEARTBEAT EncodedCommandType = 4
+	COMMAND_REQUEST   EncodedCommandType = 5
 )
 
 type ReadResult struct {
@@ -26,8 +28,16 @@ type ReadResult struct {
 	command EncodedCommandType
 }
 
+// MessageInput is used to route function and provided data
+type MessageInput struct {
+	Function string
+	Data     []byte
+}
+
 const PROTOCOL_VERSION uint8 = 5
-const CHUNK_SIZE = 3072
+const PROTOCOL_INFO_SIZE = 44
+const PROTOCOL_MAX_SIZE = 4096 // dont change
+const CHUNK_SIZE = PROTOCOL_MAX_SIZE - PROTOCOL_INFO_SIZE
 
 // 05 01 0000 id ... 0xAD
 // version-command-length-id-data-ending
@@ -39,8 +49,8 @@ func encodeCommandProtocol(uuid []byte, command_type EncodedCommandType, data []
 	}
 
 	var total int = 2 + 4 + len(uuid) + 1 + len(data) + 1
-	if total > math.MaxInt32 {
-		return nil, fmt.Errorf("command too long: %d bytes (max 2147483647)", total)
+	if total > PROTOCOL_MAX_SIZE {
+		return nil, fmt.Errorf("command too long: %d bytes (max 4096)", total)
 	}
 
 	result := make([]byte, total)
@@ -60,14 +70,14 @@ func encodeCommandProtocol(uuid []byte, command_type EncodedCommandType, data []
 }
 
 // WriteAll sends whole data using provided uuid as key for chunking data
-func writeAll(uuid []byte, data []byte, pipe *os.File) error {
-	counter := 0
+func writeAll(uuid []byte, data []byte, command_type EncodedCommandType, pipe *os.File) error {
+	var chunk []byte
+	var counter int
 	for {
 		if counter >= len(data) {
 			break
 		}
 
-		var chunk []byte
 		if counter+CHUNK_SIZE >= len(data) {
 			chunk = data[counter:]
 		} else {
@@ -85,7 +95,7 @@ func writeAll(uuid []byte, data []byte, pipe *os.File) error {
 		}
 	}
 
-	eof, err := encodeCommandProtocol(uuid, COMMAND_FINAL, []byte{})
+	eof, err := encodeCommandProtocol(uuid, command_type, []byte{})
 	if err != nil {
 		return err
 	}
@@ -114,7 +124,8 @@ func readChunk(pipe *os.File) (ReadResult, error) {
 		return ReadResult{}, errors.New("invalid protocol version")
 	}
 	if command != byte(COMMAND_DATA) && command != byte(COMMAND_ERROR) &&
-		command != byte(COMMAND_FINAL) && command != byte(COMMAND_HEARTBEAT) {
+		command != byte(COMMAND_RESULT) && command != byte(COMMAND_REQUEST) &&
+		command != byte(COMMAND_HEARTBEAT) {
 		return ReadResult{}, errors.New("invalid protocol command")
 	}
 
@@ -134,13 +145,13 @@ func readChunk(pipe *os.File) (ReadResult, error) {
 	}
 
 	id := response[0:36]
-	resp := response[37:] // +1 separator
+	resp := response[37:(len(response) - 1)] // +1 separator
 
 	return ReadResult{uuid: id, data: resp, command: EncodedCommandType(command)}, nil
 }
 
-func writeHeartbeat(uuid []byte, pipe *os.File) error {
-	eof, err := encodeCommandProtocol(uuid, COMMAND_HEARTBEAT, []byte{})
+func writeHeartbeat(pipe *os.File) error {
+	eof, err := encodeCommandProtocol([]byte(uuid.New().String()), COMMAND_HEARTBEAT, []byte{})
 	if err != nil {
 		return err
 	}
@@ -150,12 +161,6 @@ func writeHeartbeat(uuid []byte, pipe *os.File) error {
 	}
 
 	return nil
-}
-
-// MessageInput is used to route function and provided data
-type MessageInput struct {
-	Function string
-	Data     []byte
 }
 
 func encodeMessage(data MessageInput) ([]byte, error) {

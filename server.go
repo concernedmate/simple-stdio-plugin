@@ -2,61 +2,27 @@ package simplestdioplugin
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"path"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 )
 
-type PluginMap struct {
-	Map     *sync.Map
-	LogFunc func(message string)
-}
-
-func (mapped *PluginMap) GetPluginNames() []string {
-	result := []string{}
-	mapped.Map.Range(func(key, value any) bool {
-		data, ok := value.(*PluginRunning)
-		if ok {
-			result = append(result, data.Name)
-		}
-		return true
-	})
-
-	return result
-}
-
-func (mapped *PluginMap) GetPluginByName(plugin_name string) (*PluginRunning, error) {
-	val, ok := mapped.Map.Load(plugin_name)
-	if !ok {
-		return nil, errors.New("plugin not found")
-	}
-	result, ok := val.(*PluginRunning)
-	if !ok {
-		return nil, errors.New("plugin not found")
-	}
-
-	return result, nil
-}
-
 type PluginRunning struct {
-	Name    string
-	Path    string
+	Name string
+	Path string
+
 	LogFunc func(message string)
+	Router  map[string]func(data []byte) ([]byte, error)
 
-	write_chan     chan PluginComm
-	resp_chan      chan PluginComm
-	heartbeat_chan chan struct{}
-
-	cmd_mutex sync.RWMutex
-	cmd_map   map[string]chan CommandComm
+	resp_mutex  sync.RWMutex
+	resp_map    map[string]chan ReadResult
+	req_c       chan ReadResult
+	heartbeat_c chan struct{}
 
 	cmd      *exec.Cmd
 	pipe_in  *os.File
@@ -64,78 +30,106 @@ type PluginRunning struct {
 	pipe_err *os.File
 }
 
-type PluginComm struct {
-	id   []byte
-	data []byte
-}
-
-type CommandComm struct {
-	out []byte
-	err []byte
-}
-
-func (plugin *PluginRunning) Command(input MessageInput) ([]byte, error) {
+func (plugin *PluginRunning) Command(input MessageInput, timeout ...time.Duration) ([]byte, error) {
 	if plugin.cmd.ProcessState != nil {
-		return nil, errors.New("process is already exited")
+		return nil, fmt.Errorf("process is already exited")
 	}
 
 	bytes, err := encodeMessage(input)
 	if err != nil {
-		return nil, fmt.Errorf("failed to encode MessageInput: %s", err.Error())
+		return nil, fmt.Errorf("failed to encode MessageInput: %v", err)
 	}
 
 	id := uuid.New().String()
+	resp_c := make(chan ReadResult)
 
-	plugin.cmd_mutex.Lock()
-	plugin.cmd_map[id] = make(chan CommandComm)
-	plugin.cmd_mutex.Unlock()
+	plugin.resp_mutex.Lock()
+	plugin.resp_map[id] = resp_c
+	plugin.resp_mutex.Unlock()
 	defer func() {
-		plugin.cmd_mutex.Lock()
-		defer plugin.cmd_mutex.Unlock()
+		plugin.resp_mutex.Lock()
+		defer plugin.resp_mutex.Unlock()
 
-		close(plugin.cmd_map[id])
+		close(plugin.resp_map[id])
+		delete(plugin.resp_map, id)
 	}()
 
-	plugin.cmd_mutex.RLock()
-	channels := plugin.cmd_map[id]
-	plugin.cmd_mutex.RUnlock()
-
-	plugin.write_chan <- PluginComm{id: []byte(id), data: bytes}
-
-	result := <-channels
-	if result.err != nil {
-		return nil, errors.New(string(result.err))
+	if err := writeAll([]byte(id), bytes, COMMAND_REQUEST, plugin.pipe_in); err != nil {
+		return nil, fmt.Errorf("failed to write request: %v", err)
 	}
-	return result.out, nil
+
+	if len(timeout) > 0 {
+		timer := time.NewTimer(timeout[0])
+		defer timer.Stop()
+
+		select {
+		case <-timer.C:
+			return nil, fmt.Errorf("command timed out")
+		case result := <-resp_c:
+			if result.command == COMMAND_ERROR {
+				return nil, fmt.Errorf("%s", string(result.data))
+			}
+			return result.data, nil
+		}
+	} else {
+		result := <-resp_c
+		if result.command == COMMAND_ERROR {
+			return nil, fmt.Errorf("%s", string(result.data))
+		}
+		return result.data, nil
+	}
 }
 
 func (plugin *PluginRunning) runner(ctx context.Context) error {
+	max_concurrent := 1000
+
+	mut := sync.RWMutex{}
+	concurrent := 0
+
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case comm := <-plugin.write_chan:
-			plugin.cmd_mutex.RLock()
-			if plugin.cmd_map[string(comm.id)] == nil {
-				return errors.New("channel not exist")
+		case data := <-plugin.req_c:
+			mut.RLock()
+			if concurrent >= max_concurrent {
+				_ = writeAll(data.uuid, []byte("error: MAX CONCURRENT command reached"), COMMAND_ERROR, plugin.pipe_in)
+				mut.RUnlock()
+				continue
 			}
-			plugin.cmd_mutex.RUnlock()
+			mut.RUnlock()
 
-			if err := writeAll(comm.id, comm.data, plugin.pipe_in); err != nil {
-				return err
+			input, err := decodeMessage(data.data)
+			if err != nil {
+				_ = writeAll(data.uuid, []byte(fmt.Sprintf("error decode message: %v", err)), COMMAND_ERROR, plugin.pipe_in)
+				continue
 			}
-		case comm := <-plugin.resp_chan:
-			plugin.cmd_mutex.RLock()
-			if plugin.cmd_map[string(comm.id)] == nil {
-				return errors.New("channel out not exist")
-			}
-			plugin.cmd_mutex.RUnlock()
 
-			plugin.cmd_mutex.Lock()
-			plugin.cmd_map[string(comm.id)] <- CommandComm{out: comm.data, err: nil}
-			plugin.cmd_mutex.Unlock()
-		case <-plugin.heartbeat_chan:
-			if err := writeHeartbeat([]byte(uuid.New().String()), plugin.pipe_in); err != nil {
+			mut.Lock()
+			concurrent += 1
+			mut.Unlock()
+			go func() {
+				defer func() {
+					mut.Lock()
+					concurrent -= 1
+					mut.Unlock()
+				}()
+
+				if function := plugin.Router[input.Function]; function != nil {
+					result, err := function(input.Data)
+					if err != nil {
+						_ = writeAll(data.uuid, []byte(fmt.Sprintf("%v", err)), COMMAND_ERROR, plugin.pipe_in)
+					} else {
+						if err := writeAll(data.uuid, result, COMMAND_RESULT, plugin.pipe_in); err != nil {
+							_ = writeAll(data.uuid, []byte(fmt.Sprintf("error write: %v", err)), COMMAND_ERROR, plugin.pipe_in)
+						}
+					}
+				} else {
+					_ = writeAll(data.uuid, []byte("error func: "+input.Function+" not found"), COMMAND_ERROR, plugin.pipe_in)
+				}
+			}()
+		case <-plugin.heartbeat_c:
+			if err := writeHeartbeat(plugin.pipe_in); err != nil {
 				return err
 			}
 		}
@@ -144,7 +138,6 @@ func (plugin *PluginRunning) runner(ctx context.Context) error {
 
 func (plugin *PluginRunning) reader(ctx context.Context) error {
 	result := make(map[string][]byte)
-	result_mutex := sync.Mutex{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -156,28 +149,27 @@ func (plugin *PluginRunning) reader(ctx context.Context) error {
 			}
 
 			switch read.command {
-			case COMMAND_ERROR:
-				result_mutex.Lock()
-				final := PluginComm{id: read.uuid, data: read.data[:len(read.data)-1]}
-				// reset after
-				delete(result, string(read.uuid))
-				result_mutex.Unlock()
-
-				plugin.resp_chan <- final
 			case COMMAND_DATA:
-				result_mutex.Lock()
-				result[string(read.uuid)] = append(result[string(read.uuid)], read.data[:len(read.data)-1]...)
-				result_mutex.Unlock()
-			case COMMAND_FINAL:
-				result_mutex.Lock()
-				final := PluginComm{id: read.uuid, data: result[string(read.uuid)]}
-				// reset after
+				result[string(read.uuid)] = append(result[string(read.uuid)], read.data...)
+			case COMMAND_REQUEST:
+				plugin.req_c <- ReadResult{uuid: read.uuid, command: read.command, data: result[string(read.uuid)]}
 				delete(result, string(read.uuid))
-				result_mutex.Unlock()
+			case COMMAND_ERROR:
+				plugin.resp_mutex.RLock()
+				resp_c := plugin.resp_map[string(read.uuid)]
+				plugin.resp_mutex.RUnlock()
 
-				plugin.resp_chan <- final
+				resp_c <- ReadResult{uuid: read.uuid, command: read.command, data: result[string(read.uuid)]}
+				delete(result, string(read.uuid))
+			case COMMAND_RESULT:
+				plugin.resp_mutex.RLock()
+				resp_c := plugin.resp_map[string(read.uuid)]
+				plugin.resp_mutex.RUnlock()
+
+				resp_c <- ReadResult{uuid: read.uuid, command: read.command, data: result[string(read.uuid)]}
+				delete(result, string(read.uuid))
 			default:
-				return errors.New("invalid command")
+				return fmt.Errorf("invalid command")
 			}
 		}
 	}
@@ -206,94 +198,4 @@ func (plugin *PluginRunning) stderr(ctx context.Context) error {
 			}
 		}
 	}
-}
-
-func findPluginPath(base_location string, extension string) ([]string, error) {
-	dirs, err := os.ReadDir(base_location)
-	if err != nil {
-		return nil, err
-	}
-
-	result := []string{}
-	for _, val := range dirs {
-		if !val.IsDir() && strings.Contains(val.Name(), "."+extension) {
-			result = append(result, path.Join(base_location, val.Name()))
-		}
-	}
-
-	return result, nil
-}
-
-func NewPluginMap(log_func ...func(string)) PluginMap {
-	data := PluginMap{Map: &sync.Map{}}
-	if len(log_func) > 0 {
-		data.LogFunc = log_func[0]
-	}
-
-	return data
-}
-
-func pluginRoutine(ctx context.Context, config *PluginMap, base_location, extension string, args ...string) error {
-
-	if config.LogFunc == nil {
-		config.LogFunc = func(message string) {}
-	}
-
-	locations, err := findPluginPath(base_location, extension)
-	if err != nil {
-		return err
-	}
-
-	for _, val := range locations {
-		if err := execPlugin(ctx, config.LogFunc, config.Map, val, args...); err != nil {
-			return err
-		}
-	}
-
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				config.Map.Range(func(key, value any) bool {
-					p, ok := value.(*PluginRunning)
-					if ok {
-						if p.cmd.ProcessState != nil {
-							_ = execPlugin(ctx, config.LogFunc, config.Map, p.Path, args...)
-						} else {
-							p.heartbeat_chan <- struct{}{}
-						}
-					}
-
-					return true
-				})
-
-				time.Sleep(3 * time.Second)
-			}
-		}
-	}()
-
-	return nil
-}
-
-type StartPluginConfig struct {
-	Ctx       context.Context
-	BaseDir   string
-	Extension string
-
-	LogFunc func(string)
-}
-
-func StartPlugin(config StartPluginConfig, args ...string) (*PluginMap, error) {
-	if config.Ctx == nil {
-		return nil, errors.New("invalid context")
-	}
-	mapped := NewPluginMap(config.LogFunc)
-	ptr := &mapped
-
-	if err := pluginRoutine(config.Ctx, ptr, config.BaseDir, config.Extension, args...); err != nil {
-		return nil, err
-	}
-	return ptr, nil
 }
