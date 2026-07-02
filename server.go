@@ -16,8 +16,8 @@ type PluginRunning struct {
 	Name string
 	Path string
 
-	LogFunc func(message string)
-	Router  map[string]func(data []byte) ([]byte, error)
+	log_func func(message string)
+	router   map[string]func(data []byte) ([]byte, error)
 
 	resp_mutex  sync.RWMutex
 	resp_map    map[string]chan ReadResult
@@ -30,6 +30,7 @@ type PluginRunning struct {
 	pipe_err *os.File
 }
 
+// Command call function from plugin and return its result
 func (plugin *PluginRunning) Command(input MessageInput, timeout ...time.Duration) ([]byte, error) {
 	if plugin.cmd.ProcessState != nil {
 		return nil, fmt.Errorf("process is already exited")
@@ -115,7 +116,7 @@ func (plugin *PluginRunning) runner(ctx context.Context) error {
 					mut.Unlock()
 				}()
 
-				if function := plugin.Router[input.Function]; function != nil {
+				if function := plugin.router[input.Function]; function != nil {
 					result, err := function(input.Data)
 					if err != nil {
 						_ = writeAll(data.uuid, []byte(fmt.Sprintf("%v", err)), COMMAND_ERROR, plugin.pipe_in)

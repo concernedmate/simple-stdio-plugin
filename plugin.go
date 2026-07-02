@@ -19,17 +19,21 @@ type execPluginInput struct {
 }
 
 type StartPluginConfig struct {
-	BaseDir   string
+	// BaseDir is base location to look for plugin
+	BaseDir string
+	// Extension is plugin file extension
 	Extension string
-
+	// LogFunc is function that is used to log plugin debug message, keep nil to disable
 	LogFunc func(string)
-	Router  map[string]func(data []byte) ([]byte, error)
+	// Router is functions that can be called from plugin side
+	Router map[string]func(data []byte) ([]byte, error)
 }
 
 type PluginMap struct {
 	Map *sync.Map
 }
 
+// GetPluginNames list available plugins name
 func (mapped *PluginMap) GetPluginNames() []string {
 	result := []string{}
 	mapped.Map.Range(func(key, value any) bool {
@@ -43,6 +47,7 @@ func (mapped *PluginMap) GetPluginNames() []string {
 	return result
 }
 
+// GetPluginByName returns plugin instance by name
 func (mapped *PluginMap) GetPluginByName(plugin_name string) (*PluginRunning, error) {
 	val, ok := mapped.Map.Load(plugin_name)
 	if !ok {
@@ -105,8 +110,8 @@ func pluginRoutine(ctx context.Context, config StartPluginConfig, plugin_map *Pl
 						if p.cmd.ProcessState != nil {
 							_ = execPlugin(ctx, plugin_map.Map, execPluginInput{
 								location: p.Path,
-								logger:   p.LogFunc,
-								router:   p.Router,
+								logger:   p.log_func,
+								router:   p.router,
 								args:     p.cmd.Args,
 							})
 						} else {
@@ -128,7 +133,7 @@ func pluginRoutine(ctx context.Context, config StartPluginConfig, plugin_map *Pl
 func execPlugin(ctx context.Context, syncMap *sync.Map, input execPluginInput) error {
 	name := path.Base(input.location)
 
-	cmd := CommandContext(ctx, input.location, input.args...)
+	cmd := commandContext(ctx, input.location, input.args...)
 	pr1, pw1, err := os.Pipe()
 	if err != nil {
 		return err
@@ -151,10 +156,10 @@ func execPlugin(ctx context.Context, syncMap *sync.Map, input execPluginInput) e
 	}
 
 	plugin_running := &PluginRunning{
-		Name:    name,
-		Path:    input.location,
-		LogFunc: input.logger,
-		Router:  input.router,
+		Name:     name,
+		Path:     input.location,
+		log_func: input.logger,
+		router:   input.router,
 
 		resp_mutex:  sync.RWMutex{},
 		resp_map:    make(map[string]chan ReadResult),
@@ -206,6 +211,7 @@ func execPlugin(ctx context.Context, syncMap *sync.Map, input execPluginInput) e
 	return nil
 }
 
+// StartPlugin search for available plugins and runs it
 func StartPlugin(ctx context.Context, config StartPluginConfig, args ...string) (*PluginMap, error) {
 	plugin_map := &PluginMap{Map: &sync.Map{}}
 

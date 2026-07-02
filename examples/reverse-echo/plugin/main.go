@@ -2,7 +2,6 @@ package main
 
 import (
 	"log"
-	"os"
 	"slices"
 
 	simplestdioplugin "github.com/concernedmate/simple-stdio-plugin"
@@ -18,7 +17,7 @@ func main() {
 		},
 	}
 
-	plugin = simplestdioplugin.NewPluginClient(router, os.Stdin, os.Stdout)
+	plugin = simplestdioplugin.NewPluginClient(simplestdioplugin.PluginClientConfig{Router: router})
 	if err := simplestdioplugin.PluginServe(plugin); err != nil {
 		log.Fatal(err)
 	}

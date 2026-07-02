@@ -12,7 +12,7 @@ import (
 )
 
 type PluginData struct {
-	Router map[string]func(data []byte) ([]byte, error)
+	router map[string]func(data []byte) ([]byte, error)
 
 	resp_mutex  sync.RWMutex
 	resp_map    map[string]chan ReadResult
@@ -23,6 +23,17 @@ type PluginData struct {
 	stdout *os.File
 }
 
+type PluginClientConfig struct {
+	// Router is functions that can be called from host side
+	Router map[string]func(data []byte) ([]byte, error)
+
+	// Stdin is file descriptor for plugin input, defaults to os.Stdin
+	Stdin *os.File
+	// Stdout is file descriptor for plugin output, defaults to os.Stdout
+	Stdout *os.File
+}
+
+// Command call function from host and return its result
 func (plugin *PluginData) Command(input MessageInput, timeout ...time.Duration) ([]byte, error) {
 	bytes, err := encodeMessage(input)
 	if err != nil {
@@ -110,9 +121,19 @@ func (plugin *PluginData) reader(ctx context.Context) error {
 	}
 }
 
-func NewPluginClient(Router map[string]func(data []byte) ([]byte, error), stdin *os.File, stdout *os.File) *PluginData {
+func NewPluginClient(config PluginClientConfig) *PluginData {
+	stdin := config.Stdin
+	stdout := config.Stdout
+
+	if stdin == nil {
+		stdin = os.Stdin
+	}
+	if stdout == nil {
+		stdout = os.Stdout
+	}
+
 	return &PluginData{
-		Router: Router,
+		router: config.Router,
 
 		resp_mutex:  sync.RWMutex{},
 		resp_map:    make(map[string]chan ReadResult),
@@ -179,7 +200,7 @@ func PluginServe(plugin *PluginData, max_conn ...int) error {
 					mut.Unlock()
 				}()
 
-				if function := plugin.Router[input.Function]; function != nil {
+				if function := plugin.router[input.Function]; function != nil {
 					result, err := function(input.Data)
 					if err != nil {
 						_ = writeAll(data.uuid, []byte("error func: "+err.Error()), COMMAND_ERROR, plugin.stdout)

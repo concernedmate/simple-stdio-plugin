@@ -2,7 +2,6 @@ package main
 
 import (
 	"log"
-	"os"
 	"time"
 
 	simplestdioplugin "github.com/concernedmate/simple-stdio-plugin"
@@ -29,7 +28,7 @@ func main() {
 			timer.Reset(time.Second)
 		}
 	}()
-	plugin = simplestdioplugin.NewPluginClient(nil, os.Stdin, os.Stdout)
+	plugin = simplestdioplugin.NewPluginClient(simplestdioplugin.PluginClientConfig{})
 	if err := simplestdioplugin.PluginServe(plugin); err != nil {
 		log.Fatal(err)
 	}
