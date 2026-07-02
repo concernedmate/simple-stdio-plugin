@@ -13,11 +13,11 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	router := map[string]func(jsons []byte) ([]byte, error){
-		"event": func(jsons []byte) ([]byte, error) {
-			data := fmt.Sprintf("event from main.exe: %s", string(jsons))
-			fmt.Println(data)
-			return []byte(data), nil
+	router := map[string]func(data []byte) ([]byte, error){
+		"event": func(data []byte) ([]byte, error) {
+			data = []byte(fmt.Sprintf("event from main.exe: %s", string(data)))
+			fmt.Println(string(data))
+			return data, nil
 		},
 	}
 

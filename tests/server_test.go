@@ -104,10 +104,10 @@ func TestCallServer(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	router := map[string]func(jsons []byte) ([]byte, error){
-		"reverse": func(jsons []byte) ([]byte, error) {
-			slices.Reverse(jsons)
-			return jsons, nil
+	router := map[string]func(data []byte) ([]byte, error){
+		"reverse": func(data []byte) ([]byte, error) {
+			slices.Reverse(data)
+			return data, nil
 		},
 	}
 

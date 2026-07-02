@@ -10,14 +10,14 @@ import (
 var plugin *simplestdioplugin.PluginData
 
 func main() {
-	router := map[string]func(jsons []byte) ([]byte, error){
-		"command": func(jsons []byte) ([]byte, error) {
-			return jsons, nil
+	router := map[string]func(data []byte) ([]byte, error){
+		"command": func(data []byte) ([]byte, error) {
+			return data, nil
 		},
-		"call": func(jsons []byte) ([]byte, error) {
+		"call": func(data []byte) ([]byte, error) {
 			return plugin.Command(simplestdioplugin.MessageInput{
 				Function: "reverse",
-				Data:     jsons,
+				Data:     data,
 			})
 		},
 	}

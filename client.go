@@ -110,7 +110,7 @@ func (plugin *PluginData) reader(ctx context.Context) error {
 	}
 }
 
-func NewPluginClient(Router map[string]func(json []byte) ([]byte, error), stdin *os.File, stdout *os.File) *PluginData {
+func NewPluginClient(Router map[string]func(data []byte) ([]byte, error), stdin *os.File, stdout *os.File) *PluginData {
 	return &PluginData{
 		Router: Router,
 
