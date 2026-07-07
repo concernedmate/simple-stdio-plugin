@@ -157,17 +157,21 @@ func (plugin *PluginRunning) reader(ctx context.Context) error {
 				delete(result, string(read.uuid))
 			case COMMAND_ERROR:
 				plugin.resp_mutex.RLock()
-				resp_c := plugin.resp_map[string(read.uuid)]
+				resp_c, ok := plugin.resp_map[string(read.uuid)]
 				plugin.resp_mutex.RUnlock()
 
-				resp_c <- ReadResult{uuid: read.uuid, command: read.command, data: result[string(read.uuid)]}
+				if ok && resp_c != nil {
+					resp_c <- ReadResult{uuid: read.uuid, command: read.command, data: result[string(read.uuid)]}
+				}
 				delete(result, string(read.uuid))
 			case COMMAND_RESULT:
 				plugin.resp_mutex.RLock()
-				resp_c := plugin.resp_map[string(read.uuid)]
+				resp_c, ok := plugin.resp_map[string(read.uuid)]
 				plugin.resp_mutex.RUnlock()
 
-				resp_c <- ReadResult{uuid: read.uuid, command: read.command, data: result[string(read.uuid)]}
+				if ok && resp_c != nil {
+					resp_c <- ReadResult{uuid: read.uuid, command: read.command, data: result[string(read.uuid)]}
+				}
 				delete(result, string(read.uuid))
 			default:
 				return fmt.Errorf("invalid command")
