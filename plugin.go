@@ -87,17 +87,6 @@ func pluginRoutine(ctx context.Context, config StartPluginConfig, plugin_map *Pl
 		return err
 	}
 
-	for _, val := range locations {
-		if err := execPlugin(ctx, plugin_map.Map, execPluginInput{
-			location: val,
-			logger:   config.LogFunc,
-			router:   config.Router,
-			args:     args,
-		}); err != nil {
-			return err
-		}
-	}
-
 	go func() {
 		for {
 			select {
@@ -126,6 +115,17 @@ func pluginRoutine(ctx context.Context, config StartPluginConfig, plugin_map *Pl
 			}
 		}
 	}()
+
+	for _, val := range locations {
+		if err := execPlugin(ctx, plugin_map.Map, execPluginInput{
+			location: val,
+			logger:   config.LogFunc,
+			router:   config.Router,
+			args:     args,
+		}); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
